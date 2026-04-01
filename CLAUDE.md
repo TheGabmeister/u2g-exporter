@@ -4,56 +4,54 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**u2g-exporter** (Unity to Godot Exporter) is a cross-platform C++17 desktop application that converts Unity `.unitypackage` files into ready-to-open Godot 4.6.1 projects. V1 scope covers static meshes (FBX), textures, materials (URP Lit/Unlit + legacy Standard), scenes, and prefabs. See [SPEC.md](SPEC.md) for the complete specification — it is the authoritative source for all conversion logic.
+**u2g-exporter** (Unity to Godot Exporter) is a Unity Editor tool that exports selected assets from a Unity project into a ready-to-open Godot 4.6.1 project. The user right-clicks a folder in the Project window, selects "Export to Godot", and gets a complete Godot project. V1 scope covers static meshes (FBX), textures, materials (URP Lit/Unlit + legacy Standard), scenes, and prefabs. See [SPEC.md](SPEC.md) for the complete specification — it is the authoritative source for all conversion logic.
 
-**Current state:** The repository contains the specification and a Unity test project (for generating test `.unitypackage` files). The C++ implementation is being built per SPEC.md Section 12.
-
-## Build System
-
-- **C++17**, **CMake 3.16+**
-- All dependencies vendored in `thirdparty/` (ufbx, Dear ImGui, GLFW, miniz, nativefiledialog-extended)
-- Cross-platform: Windows, macOS, Linux
-
-```bash
-mkdir build && cd build
-cmake ..
-cmake --build . --config Release
-```
+**Unity version:** Unity 6 (6000.x), C# 9 / .NET Standard 2.1
 
 ## Architecture
 
-The converter implements a **6-phase pipeline** running on a background worker thread (main thread runs the ImGui UI loop):
+The tool is a set of C# Editor scripts with no external dependencies — it uses only Unity Editor APIs (`AssetDatabase`, `Material`, `PrefabUtility`, `EditorSceneManager`, etc.).
+
+### Conversion Pipeline
 
 ```
-.unitypackage (tar.gz)
-  → Extract to temp dir (miniz + custom tar reader)
-  → Build GUID→path table from pathname + asset.meta files
+Right-click folder → "Export to Godot"
+  → Resolve dependencies (AssetDatabase.FindAssets + GetDependencies)
   → Classify assets by type (scene, prefab, material, texture, FBX, other)
   → Convert each type in order: textures → FBX → materials → prefabs → scenes
   → Generate project.godot + folder structure
-  → Produce skip report + cleanup temp dir
+  → Log skip report to Unity Console
 ```
 
 ### Key Design Decisions
 
-- **Custom Unity YAML parser** — Unity uses a non-standard YAML 1.1 variant with custom tags (`!u!<classID> &<fileID>`). A purpose-built parser handles this instead of a generic YAML library.
-- **FBX files are copied, not converted** — Godot imports FBX natively. The converter uses ufbx only to extract node/mesh names for material override paths and fileID resolution.
-- **Coordinate system conversion** — Unity is left-handed Y-up; Godot is right-handed Y-up. The conversion negates Z position, negates X/Y quaternion components, builds a 3x3 basis matrix, and serializes as `Transform3D`. Applied to scene-level transforms only (FBX transforms are handled by Godot's importer). Full algorithm in SPEC.md Section 7.
+- **Runs inside Unity** — Uses Unity's own APIs to read materials, traverse scene hierarchies, and resolve asset references. No custom YAML parser or external libraries needed.
+- **Auto-includes dependencies** — Assets referenced by scenes/prefabs/materials are included even if they live outside the selected folder, via `AssetDatabase.GetDependencies(path, recursive: true)`.
+- **FBX files are copied, not converted** — Godot imports FBX natively. Node names are extracted by loading the FBX as a `GameObject` via `AssetDatabase.LoadAssetAtPath<GameObject>()`.
+- **Coordinate system conversion** — Unity is left-handed Y-up; Godot is right-handed Y-up. The conversion negates Z position, negates X/Y quaternion components, builds a 3x3 basis matrix, and serializes as `Transform3D`. Applied to scene-level transforms only. Full algorithm in SPEC.md Section 6.
 - **Best-effort error handling** — Never aborts on a single bad asset. Each asset is processed independently. Unresolvable references produce placeholder nodes + warnings.
 - **Prefab nesting** — One level deep is flattened; deeper nesting is warned.
 
-### Source Layout (per SPEC.md Section 12)
+### Source Layout (per SPEC.md Section 10)
+
+All code lives in `Assets/Editor/U2GExporter/` with an Editor-only `.asmdef`:
 
 ```
-src/
-├── main.cpp                         # Entry point, ImGui setup, main loop
-├── gui/                             # ImGui window + converter UI
-├── converter/                       # Pipeline: extractor, GUID table, YAML parser,
-│                                    #   texture/material/scene/prefab/light/camera converters,
-│                                    #   project writer, coord_convert
-└── util/                            # Logging, common types (AssetEntry, etc.)
+Assets/Editor/U2GExporter/
+├── ExportMenu.cs          # Context menu entry point, orchestration
+├── DependencyResolver.cs  # Asset discovery + dependency collection
+├── SceneExporter.cs       # Scene → .tscn conversion
+├── PrefabExporter.cs      # Prefab → .tscn conversion
+├── MaterialExporter.cs    # Material → .tres conversion
+├── TextureExporter.cs     # Texture copy logic
+├── FbxExporter.cs         # FBX copy + node name extraction
+├── CoordConvert.cs        # Coordinate system conversion math
+├── ProjectWriter.cs       # project.godot + folder structure
+├── TscnWriter.cs          # .tscn file format serializer
+├── TresWriter.cs          # .tres file format serializer
+└── SkipReport.cs          # Skip report generation
 ```
 
 ## Unity Test Project
 
-The `Assets/`, `ProjectSettings/`, `Packages/` directories are a Unity 6 project used to produce test `.unitypackage` files. These are not part of the C++ converter — they exist so developers can create controlled test inputs.
+The root-level `Assets/Scenes/`, `Assets/Settings/`, `ProjectSettings/`, `Packages/` directories are a Unity 6 project with sample content. This project serves as the development environment and provides test assets for validating the exporter.
