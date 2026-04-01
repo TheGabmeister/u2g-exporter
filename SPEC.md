@@ -78,12 +78,13 @@ Register via `[MenuItem("Assets/Export to Godot")]` with a validation method tha
 
 1. User right-clicks a folder in the Project window
 2. Selects "Export to Godot"
-3. `EditorUtility.SaveFolderPanel()` opens — user picks the output directory. If the folder already contains files (including an existing `project.godot`), they are overwritten silently.
-4. If the user has unsaved scene changes, prompt to save via `EditorSceneManager.SaveCurrentModifiedScenesIfUserWantsTo()`
-5. Dependency resolution runs (see section 2)
-6. Conversion runs with progress bar
-7. On completion, a summary is logged to the Unity Console
-8. `EditorUtility.RevealInFinder()` opens the output folder
+3. `EditorUtility.SaveFolderPanel()` opens — user picks the output directory. If the user cancels, export aborts immediately.
+4. If the chosen output directory already contains files (including an existing `project.godot`), prompt for confirmation before writing anything. If the user declines, export aborts with no output written.
+5. If the user has unsaved scene changes, prompt to save via `EditorSceneManager.SaveCurrentModifiedScenesIfUserWantsTo()`. If the user cancels this prompt, export aborts with no output written.
+6. Dependency resolution runs (see section 2)
+7. Conversion runs with progress bar
+8. On completion, a summary is logged to the Unity Console
+9. `EditorUtility.RevealInFinder()` opens the output folder
 
 ### Progress Reporting
 
@@ -108,7 +109,7 @@ Since the tool runs inside Unity, assets may reference textures, materials, and 
 **Phase 4 — Filter:** Remove assets that should not be exported:
 - Paths starting with `Packages/` (Unity built-in packages)
 - Script files (`.cs`)
-- Editor-only assets
+- Editor-only assets, defined in V1 as any asset whose path contains an `Editor/` path segment (for example `Assets/Tools/Editor/Icon.png`)
 
 **Phase 5 — Classify:** For each remaining path, determine asset type via file extension:
 - `.unity` → scene
@@ -150,6 +151,14 @@ No `.import` files are generated. Godot auto-generates these on first project op
 ### Approach: Keep FBX, Let Godot Import
 
 FBX files are **copied directly** to the Godot project, preserving the original Unity folder structure (minus the `Assets/` prefix). Godot 4.6.1 natively imports FBX files.
+
+### Supported Model Sources
+
+V1 supports **only** meshes whose source asset path ends with `.fbx`.
+
+- During scene/prefab conversion, a `MeshFilter.sharedMesh` is considered exportable only if `AssetDatabase.GetAssetPath(meshFilter.sharedMesh)` resolves to a `.fbx` asset path.
+- Non-FBX mesh sources are **not** converted in V1. This includes imported `.obj` / `.blend` files, Unity primitive meshes, and generated mesh sub-assets with no `.fbx` source path.
+- When a non-FBX mesh source is encountered, create an empty `Node3D` placeholder at the correct transform, log a warning that includes the mesh name and source path if available, and add the asset to the skip report under an `Unsupported Mesh Sources` category.
 
 ### Node Name Extraction
 
@@ -225,6 +234,15 @@ Three shader families are supported:
 
 Unknown/unsupported shaders → create a default white `StandardMaterial3D` + log a warning.
 
+### PBR Texture Strategy
+
+V1 always emits `StandardMaterial3D`, never `ORMMaterial3D`.
+
+- This is a deliberate simplification even though Godot's `StandardMaterial3D` expects separate ambient-occlusion, roughness, and metallic textures.
+- Unity metallic workflows commonly pack metallic into one channel and smoothness into the alpha channel of the same texture.
+- V1 does **not** split channels, invert texture data, or repack textures.
+- Therefore, V1 exports the scalar metallic/roughness values and any directly reusable texture references, while logging a warning when packed metallic-smoothness data is detected because the visual result will only be approximate.
+
 ### Property Mapping: URP/Lit → StandardMaterial3D
 
 | Unity Property | Godot Property | Conversion |
@@ -232,18 +250,25 @@ Unknown/unsupported shaders → create a default white `StandardMaterial3D` + lo
 | `_BaseColor` | `albedo_color` | Direct RGBA mapping |
 | `_BaseMap` | `albedo_texture` | Texture reference via path |
 | `_Metallic` | `metallic` | Direct float |
-| `_MetallicGlossMap` | `metallic_texture` | Texture reference |
+| `_MetallicGlossMap` | `metallic_texture` + `metallic_texture_channel` | Texture reference, `TEXTURE_CHANNEL_RED` |
 | `_Smoothness` | `roughness` | `roughness = 1.0 - smoothness` |
 | `_BumpMap` | `normal_enabled` + `normal_texture` | Set `normal_enabled = true`, texture reference |
 | `_BumpScale` | `normal_scale` | Direct float |
-| `_EmissionColor` | `emission_enabled` + `emission` + `emission_energy` | Set `emission_enabled = true`, Color → emission, brightness → energy |
+| `_EmissionColor` | `emission_enabled` + `emission` + `emission_energy_multiplier` | Set `emission_enabled = true`, Color → emission, brightness → multiplier |
 | `_EmissionMap` | `emission_texture` | Texture reference |
-| `_OcclusionMap` | `ao_texture` | Texture reference |
+| `_OcclusionMap` | `ao_enabled` + `ao_texture` + `ao_texture_channel` | Set `ao_enabled = true`, texture reference, `TEXTURE_CHANNEL_GREEN` |
 | `_OcclusionStrength` | `ao_light_affect` | Direct float |
-| `_Cutoff` | `alpha_scissor_threshold` | Alpha cutoff value |
-| `_Surface` (0/1) | `transparency` | 0 = opaque, 1 = alpha |
+| `_Cutoff` | `alpha_scissor_threshold` | Alpha cutoff value, only when using alpha scissor |
+| `_Surface` (0/1) | `transparency` | 0 = `TRANSPARENCY_DISABLED`; 1 = `TRANSPARENCY_ALPHA`, unless `_Cutoff > 0` in which case use `TRANSPARENCY_ALPHA_SCISSOR` |
 | `_Cull` (0/1/2) | `cull_mode` | 0 = off, 1 = front, 2 = back |
 | `_BaseMap` tiling/offset | `uv1_scale` + `uv1_offset` | `material.GetTextureScale` / `GetTextureOffset` |
+
+Additional V1 rules for URP/Lit:
+
+- If `_MetallicGlossMap` is present, write `metallic_texture` and `metallic_texture_channel = TEXTURE_CHANNEL_RED`.
+- V1 does **not** write `roughness_texture`; roughness comes from the scalar smoothness inversion only.
+- If `_EmissionMap` is present but `_EmissionColor` is black, still enable emission and write the texture.
+- If `_OcclusionMap` is present, write `ao_enabled = true`, `ao_texture`, and `ao_texture_channel = TEXTURE_CHANNEL_GREEN`.
 
 ### Property Mapping: Legacy Standard → StandardMaterial3D
 
@@ -251,12 +276,18 @@ Unknown/unsupported shaders → create a default white `StandardMaterial3D` + lo
 |---|---|---|
 | `_Color` | `albedo_color` | Direct RGBA |
 | `_MainTex` | `albedo_texture` | Texture reference |
-| `_MetallicGlossMap` | `metallic_texture` | Texture reference |
+| `_MetallicGlossMap` | `metallic_texture` + `metallic_texture_channel` | Texture reference, `TEXTURE_CHANNEL_RED` |
 | `_Glossiness` | `roughness` | `roughness = 1.0 - glossiness` |
 | `_BumpMap` | `normal_enabled` + `normal_texture` | Set `normal_enabled = true`, texture reference |
-| `_EmissionColor` | `emission_enabled` + `emission` | Set `emission_enabled = true`, color mapping |
+| `_EmissionColor` | `emission_enabled` + `emission` + `emission_energy_multiplier` | Set `emission_enabled = true`, color mapping, default multiplier `1.0` |
 | `_EmissionMap` | `emission_texture` | Texture reference |
-| `_OcclusionMap` | `ao_texture` | Texture reference |
+| `_OcclusionMap` | `ao_enabled` + `ao_texture` + `ao_texture_channel` | Set `ao_enabled = true`, texture reference, `TEXTURE_CHANNEL_GREEN` |
+
+Additional V1 rules for legacy Standard:
+
+- If `_MetallicGlossMap` is present, write `metallic_texture` and `metallic_texture_channel = TEXTURE_CHANNEL_RED`.
+- V1 does **not** write `roughness_texture`; roughness comes from the scalar glossiness inversion only.
+- If `_OcclusionMap` is present, write `ao_enabled = true`, `ao_texture`, and `ao_texture_channel = TEXTURE_CHANNEL_GREEN`.
 
 ### Output Format: .tres
 
@@ -285,23 +316,48 @@ Each `.unity` scene file found in the selected folder is converted to a `.tscn` 
 
 ### Loading Scenes
 
-Scenes are loaded via `EditorSceneManager.OpenScene(scenePath, OpenSceneMode.Additive)`. Before starting export, the user's currently open scene is saved if it has unsaved changes (prompted via `EditorSceneManager.SaveCurrentModifiedScenesIfUserWantsTo()`). After all scenes are converted, the original scene is restored.
+Before exporting any scenes, capture the full current editor scene setup via `EditorSceneManager.GetSceneManagerSetup()` and remember the active scene.
+
+Scenes are loaded via `EditorSceneManager.OpenScene(scenePath, OpenSceneMode.Additive)`. Before starting export, the user's currently open scenes are saved if they have unsaved changes (prompted via `EditorSceneManager.SaveCurrentModifiedScenesIfUserWantsTo()`).
+
+After conversion completes, is canceled by the user, or fails, restore the exact prior editor scene setup via `EditorSceneManager.RestoreSceneManagerSetup()`, including:
+
+- all scenes that were open before export
+- which of those scenes were loaded additively
+- which scene was active
+
+If the user cancels the save prompt before export starts, no scenes are opened and no output is written.
+
+### Scene Root Node
+
+Every exported Unity scene produces a single synthetic Godot root node:
+
+- Node type: `Node3D`
+- Node name: the Unity scene filename without extension
+- Transform: identity, omitted from output
+
+All Unity root `GameObject`s in the scene become children of this synthetic root, in their existing hierarchy order. This guarantees a valid Godot scene even when the Unity scene contains multiple root objects.
 
 ### Hierarchy Traversal
 
 1. Get root objects via `scene.GetRootGameObjects()`
 2. Recursively walk children via `Transform.childCount` / `Transform.GetChild(i)`
 3. For each `GameObject`, determine its Godot node type by checking components:
-   - Has `MeshFilter` + `MeshRenderer` → instance the referenced FBX as `ExtResource`
+   - Has `MeshFilter` + `MeshRenderer` whose mesh source path ends with `.fbx` → instance the referenced FBX as `ExtResource`
+   - Has `MeshFilter` + `MeshRenderer` with any other mesh source → create `Node3D` placeholder + warning
    - Has `Light` component → `DirectionalLight3D`, `OmniLight3D`, or `SpotLight3D`
    - Has `Camera` component → `Camera3D`
    - Otherwise (empty/grouping) → `Node3D`
 4. **Inactive GameObjects** (`GameObject.activeSelf == false`) are exported with `visible = false` on the Godot node
-5. Apply coordinate system conversion to all transforms
-6. Resolve material references: iterate over `MeshRenderer.sharedMaterials` array — each element at index `N` maps to `surface_material_override/N` in the Godot node. Resolve each material path via `AssetDatabase.GetAssetPath()` → ExtResource refs to converted .tres files.
-7. For FBX instances, apply material overrides as child node overrides using node names from the loaded FBX hierarchy (see section 4, "Material Overrides on FBX Instances")
-8. Calculate `load_steps` as the total count of `[ext_resource]` + `[sub_resource]` entries in the file
-9. Write the .tscn file
+5. Disabled components are preserved explicitly:
+   - Disabled `MeshRenderer` → export the node, but write `visible = false`
+   - Disabled `Light` → export the light node, but write `visible = false`
+   - Disabled `Camera` → export the camera node, but write `visible = false` and `current = false`
+6. Apply coordinate system conversion to all transforms
+7. Resolve material references: iterate over `MeshRenderer.sharedMaterials` array — each element at index `N` maps to `surface_material_override/N` in the Godot node. Resolve each material path via `AssetDatabase.GetAssetPath()` → ExtResource refs to converted .tres files.
+8. For FBX instances, apply material overrides as child node overrides using node names from the loaded FBX hierarchy (see section 4, "Material Overrides on FBX Instances")
+9. Calculate `load_steps` as the total count of `[ext_resource]` + `[sub_resource]` entries in the file
+10. Write the .tscn file
 
 ### Duplicate Node Names
 
@@ -313,7 +369,17 @@ Chair  →  Chair_2
 Chair  →  Chair_3
 ```
 
-Note: if a renamed node is the target of a prefab override (referenced by its original Unity name), the override may not resolve correctly. This is logged as a warning.
+Note: renaming affects only the emitted Godot node name. Override targeting still works through the source-object mapping described below.
+
+### Override Target Resolution
+
+To avoid ambiguity when duplicate names are renamed for Godot output, overrides are resolved by recorded source-object identity, not by re-searching for node names later.
+
+- As each scene or prefab node is emitted, record a mapping from the source Unity object (`GameObject`, `Transform`, or component target as applicable) to the final Godot node path that was written.
+- Prefab transform overrides and material overrides must use this recorded mapping to find the correct emitted node.
+- If an override target does not exist in the recorded mapping, log a warning and skip that override.
+
+This makes override behavior deterministic even when Unity sibling names had to be uniquified for Godot.
 
 ### Transform Conversion
 
@@ -380,7 +446,8 @@ If the result equals the identity (`Transform3D(1,0,0, 0,1,0, 0,0,1, 0,0,0)`), o
 | Unity Component | Godot Node | Property Mapping |
 |---|---|---|
 | GameObject (empty) | `Node3D` | name, transform |
-| MeshFilter + MeshRenderer | `Node3D` + instanced FBX scene | transform, material overrides |
+| MeshFilter + MeshRenderer with `.fbx` source | `Node3D` + instanced FBX scene | transform, material overrides |
+| MeshFilter + MeshRenderer with non-`.fbx` source | `Node3D` placeholder | transform only, warning |
 | Light (Directional) | `DirectionalLight3D` | color, intensity, shadows |
 | Light (Point) | `OmniLight3D` | color, intensity, range, shadows |
 | Light (Spot) | `SpotLight3D` | color, intensity, range, angle, shadows |
@@ -409,6 +476,17 @@ If the result equals the identity (`Transform3D(1,0,0, 0,1,0, 0,0,1, 0,0,0)`), o
 ### .tscn Output Format
 
 `ext_resource` IDs are assigned as sequential integers starting from `"1"`, in the order resources are first referenced. The same convention applies to `.tres` files.
+
+### Deterministic Serialization Rules
+
+To keep generated files valid and diff-friendly, V1 serialization follows these rules:
+
+- All emitted Godot resource paths use forward slashes and `res://` prefixes, even on Windows.
+- String values in `.tscn`, `.tres`, and `project.godot` are always double-quoted.
+- Any embedded double quotes or backslashes inside serialized strings are escaped.
+- Floating-point values are serialized with `CultureInfo.InvariantCulture` so the decimal separator is always `.`.
+- Asset lists discovered from sets or hash-based collections must be sorted lexicographically before export so file ordering is deterministic.
+- Within scenes and prefabs, hierarchy traversal preserves Unity sibling order.
 
 ```ini
 [gd_scene load_steps=3 format=3]
@@ -450,6 +528,8 @@ When a scene contains a `PrefabInstance`:
 3. Create an instanced node: `instance=ExtResource("<id>")`
 4. Apply overrides (see below)
 
+If a prefab instance refers to a missing or unsupported prefab source, create an empty `Node3D` placeholder at the correct transform and log a warning.
+
 ### Override Support (V1 Scope)
 
 V1 supports the two most common override types, read via `PrefabUtility.GetPropertyModifications()`:
@@ -469,6 +549,14 @@ All other override types are **logged as warnings** and skipped.
 - **One level deep:** If a prefab references another prefab, the inner prefab reference is **flattened** (its hierarchy is baked directly into the outer prefab's .tscn)
 - Deeper nesting is detected via `PrefabUtility.GetCorrespondingObjectFromSource()` and logged as a warning
 - This avoids recursive override resolution while handling the majority of real-world cases
+
+### Disabled Prefab Components
+
+The same inactive/disabled rules used for scene conversion apply during prefab conversion:
+
+- Inactive prefab `GameObject` → `visible = false`
+- Disabled `MeshRenderer` / `Light` → export node with `visible = false`
+- Disabled `Camera` → export node with `visible = false` and `current = false`
 
 ---
 
@@ -505,7 +593,15 @@ Assets/Prefabs/Lamp.prefab  →  Prefabs/Lamp.tscn
 
 ### Special Characters in Names
 
-Unity allows spaces, parentheses, unicode, and other special characters in file and folder names. These are preserved as-is in the output — Godot supports them. When writing references in `.tscn`/`.tres` files, paths containing special characters must be quoted with double quotes (e.g., `path="res://Models/Old House (1)/building.fbx"`).
+Unity allows spaces, parentheses, unicode, and other special characters in file and folder names. These are preserved as-is in the output — Godot supports them.
+
+When writing references in `.tscn`/`.tres` files:
+
+- always quote paths with double quotes
+- always use forward slashes in `res://` paths
+- escape embedded `"` and `\` characters if they appear in names
+
+Example: `path="res://Models/Old House (1)/building.fbx"`
 
 ### project.godot
 
@@ -538,7 +634,7 @@ The converter **never aborts** due to a single bad asset. Every asset is process
 | Severity | Behavior | Examples |
 |---|---|---|
 | **INFO** | Normal progress | "Converting texture brick.png", "Found 142 assets" |
-| **WARN** | Asset partially converted or skipped | Unknown shader, missing texture reference, unsupported override type, nested prefab depth > 1 |
+| **WARN** | Asset partially converted or skipped | Unknown shader, missing texture reference, unsupported override type, unsupported mesh source, nested prefab depth > 1 |
 | **ERROR** | Asset failed to convert entirely | Corrupt FBX file, failed to load scene, I/O failure on a specific file |
 | **FATAL** | Conversion cannot continue | Output directory not writable, out of disk space |
 
@@ -562,6 +658,7 @@ Skipped asset types (not supported in V1):
   Particle Systems:     2 files
   Animator Controllers: 1 file
   Custom Shaders:       1 file
+  Unsupported Mesh Src: 2 files
   Audio Clips:          3 files
   
   Details:
@@ -622,6 +719,7 @@ The following are explicitly **not supported** in V1 and will be logged in the s
 - Reflection probes
 - Video clips
 - Sprite / 2D assets
+- Imported `.obj` / `.blend` model sources
 - Nested prefabs deeper than 1 level
 - Prefab variants
 - Batch mode / CLI export
@@ -635,7 +733,7 @@ The following are explicitly **not supported** in V1 and will be logged in the s
 
 2. **Material overrides on FBX instances:** The converter extracts node names from the FBX via Unity's importer and constructs override paths assuming Godot's importer produces matching names. This works in ~80-90% of cases. It can fail if Godot renames nodes (duplicate suffixes, sanitization) or restructures the hierarchy. Mitigation: best-effort path matching, warning on failure. Failed overrides result in the FBX's embedded materials being used instead.
 
-3. **Smoothness → Roughness inversion:** Unity stores smoothness in the alpha channel of the metallic map texture. Godot uses a separate roughness value/texture. When a metallic-smoothness packed texture is detected, the converter would ideally split/invert the alpha channel. V1 will do the scalar inversion (`roughness = 1 - smoothness`) but will **not** modify texture data. Packed metallic-smoothness textures will produce a warning.
+3. **Smoothness → Roughness inversion:** Unity stores smoothness in the alpha channel of the metallic map texture. Godot `StandardMaterial3D` uses a separate roughness texture. V1 will keep the scalar inversion (`roughness = 1 - smoothness`) and may reuse the metallic texture's red channel for metallic, but it will **not** extract/invert the alpha channel into a standalone roughness texture. Packed metallic-smoothness textures will produce a warning and only approximate the Unity result.
 
 4. **Light intensity:** Unity and Godot use different light intensity units. Unity URP uses physical units (lumens/lux) while Godot uses an arbitrary energy multiplier. Direct value copy may produce too-bright or too-dim lighting. Mitigation: copy value as-is, document that manual adjustment may be needed.
 
@@ -643,7 +741,7 @@ The following are explicitly **not supported** in V1 and will be logged in the s
 
 6. **FBX import-time root transforms:** Unity and Godot may apply different corrections when importing the same FBX file (e.g., axis rotation, scale factor), since FBX files can be authored in various coordinate systems (Z-up, Y-up) and unit scales. This can cause models to appear rotated or scaled differently compared to Unity, even though our scene-level coordinate conversion is correct. The converter cannot control Godot's FBX import behavior. Mitigation: the user manually adjusts affected models in Godot.
 
-7. **Scene loading during export:** Opening scenes for conversion temporarily changes the active scene in the Editor. The previously open scene is restored after export, but unsaved changes could be lost if the user declines the save prompt. Mitigation: prompt to save before starting export.
+7. **Scene loading during export:** Opening scenes for conversion temporarily changes the active scene setup in the Editor. V1 mitigates this by capturing the full scene-manager setup before export and restoring it afterward, but the editor may still briefly switch scenes while export is running.
 
 8. **Editor responsiveness:** Export runs synchronously on the main thread, which may cause the Editor to appear unresponsive during large exports. Mitigation: progress bar provides feedback and supports cancellation.
 
@@ -655,6 +753,7 @@ The following are explicitly **not supported** in V1 and will be logged in the s
 - V1.x: Texture import settings mapping (normal map detection, filter/wrap modes, sRGB) via .import files
 - V1.x: Batch mode / CLI support for automated exports
 - V1.x: Persistent EditorWindow with settings (default output folder, export presets)
+- V1.x/V2: Imported `.obj` and `.blend` model source support
 - V2: Skinned meshes, animations, blend shapes
 - V3: Audio import, particle system basic conversion
 - V4: C# → GDScript transpilation (limited subset)
