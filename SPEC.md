@@ -78,7 +78,7 @@ Register via `[MenuItem("Assets/Export to Godot")]` with a validation method tha
 
 1. User right-clicks a folder in the Project window
 2. Selects "Export to Godot"
-3. `EditorUtility.SaveFolderPanel()` opens — user picks the output directory
+3. `EditorUtility.SaveFolderPanel()` opens — user picks the output directory. If the folder already contains files (including an existing `project.godot`), they are overwritten silently.
 4. If the user has unsaved scene changes, prompt to save via `EditorSceneManager.SaveCurrentModifiedScenesIfUserWantsTo()`
 5. Dependency resolution runs (see section 2)
 6. Conversion runs with progress bar
@@ -122,6 +122,9 @@ Since the tool runs inside Unity, assets may reference textures, materials, and 
 
 - **Assets outside the selected folder:** A material at `Assets/SharedMaterials/Glass.mat` referenced by a scene inside the selected folder WILL be included automatically.
 - **Circular references:** `AssetDatabase.GetDependencies()` handles circular references internally.
+- **Scene classification:** Only `.unity` files inside the selected folder are converted to `.tscn` scene files. Scenes discovered as external dependencies are NOT converted as standalone scenes — they are only relevant for reference resolution.
+- **Prefab-only folders:** If the selected folder contains no `.unity` scene files (only prefabs, textures, models, etc.), the output is still valid — `project.godot` is generated normally, but no scene `.tscn` files are produced.
+- **Multi-scene setups:** Unity additive/multi-scene setups are converted as independent scenes. Each `.unity` file becomes its own `.tscn` with no cross-scene references.
 
 ---
 
@@ -231,9 +234,9 @@ Unknown/unsupported shaders → create a default white `StandardMaterial3D` + lo
 | `_Metallic` | `metallic` | Direct float |
 | `_MetallicGlossMap` | `metallic_texture` | Texture reference |
 | `_Smoothness` | `roughness` | `roughness = 1.0 - smoothness` |
-| `_BumpMap` | `normal_texture` | Texture reference |
+| `_BumpMap` | `normal_enabled` + `normal_texture` | Set `normal_enabled = true`, texture reference |
 | `_BumpScale` | `normal_scale` | Direct float |
-| `_EmissionColor` | `emission` + `emission_energy` | Color → emission, brightness → energy |
+| `_EmissionColor` | `emission_enabled` + `emission` + `emission_energy` | Set `emission_enabled = true`, Color → emission, brightness → energy |
 | `_EmissionMap` | `emission_texture` | Texture reference |
 | `_OcclusionMap` | `ao_texture` | Texture reference |
 | `_OcclusionStrength` | `ao_light_affect` | Direct float |
@@ -250,8 +253,8 @@ Unknown/unsupported shaders → create a default white `StandardMaterial3D` + lo
 | `_MainTex` | `albedo_texture` | Texture reference |
 | `_MetallicGlossMap` | `metallic_texture` | Texture reference |
 | `_Glossiness` | `roughness` | `roughness = 1.0 - glossiness` |
-| `_BumpMap` | `normal_texture` | Texture reference |
-| `_EmissionColor` | `emission` | Color mapping |
+| `_BumpMap` | `normal_enabled` + `normal_texture` | Set `normal_enabled = true`, texture reference |
+| `_EmissionColor` | `emission_enabled` + `emission` | Set `emission_enabled = true`, color mapping |
 | `_EmissionMap` | `emission_texture` | Texture reference |
 | `_OcclusionMap` | `ao_texture` | Texture reference |
 
@@ -293,11 +296,12 @@ Scenes are loaded via `EditorSceneManager.OpenScene(scenePath, OpenSceneMode.Add
    - Has `Light` component → `DirectionalLight3D`, `OmniLight3D`, or `SpotLight3D`
    - Has `Camera` component → `Camera3D`
    - Otherwise (empty/grouping) → `Node3D`
-4. Apply coordinate system conversion to all transforms
-5. Resolve material references: `MeshRenderer.sharedMaterials` → `AssetDatabase.GetAssetPath()` → ExtResource refs to converted .tres files
-6. For FBX instances, apply material overrides as child node overrides using node names from the loaded FBX hierarchy (see section 4, "Material Overrides on FBX Instances")
-7. Calculate `load_steps` as the total count of `[ext_resource]` + `[sub_resource]` entries in the file
-8. Write the .tscn file
+4. **Inactive GameObjects** (`GameObject.activeSelf == false`) are exported with `visible = false` on the Godot node
+5. Apply coordinate system conversion to all transforms
+6. Resolve material references: iterate over `MeshRenderer.sharedMaterials` array — each element at index `N` maps to `surface_material_override/N` in the Godot node. Resolve each material path via `AssetDatabase.GetAssetPath()` → ExtResource refs to converted .tres files.
+7. For FBX instances, apply material overrides as child node overrides using node names from the loaded FBX hierarchy (see section 4, "Material Overrides on FBX Instances")
+8. Calculate `load_steps` as the total count of `[ext_resource]` + `[sub_resource]` entries in the file
+9. Write the .tscn file
 
 ### Duplicate Node Names
 
@@ -403,6 +407,8 @@ If the result equals the identity (`Transform3D(1,0,0, 0,1,0, 0,0,1, 0,0,0)`), o
 | `camera.orthographicSize` | `size` | Direct float |
 
 ### .tscn Output Format
+
+`ext_resource` IDs are assigned as sequential integers starting from `"1"`, in the order resources are first referenced. The same convention applies to `.tres` files.
 
 ```ini
 [gd_scene load_steps=3 format=3]
