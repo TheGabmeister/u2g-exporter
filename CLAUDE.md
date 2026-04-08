@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**u2g-exporter** (Unity to Godot Exporter) is a Unity Editor tool that exports selected assets from a Unity project into a ready-to-open Godot 4.6.1 project. The user right-clicks a folder in the Project window, selects "Export to Godot", and gets a complete Godot project. V1 scope covers static meshes (FBX), textures, materials (URP Lit/Unlit + legacy Standard), scenes, and prefabs. See [SPEC.md](SPEC.md) for the complete specification — it is the authoritative source for all conversion logic. If AGENTS.md and the spec disagree, follow SPEC.md.
+**u2g-exporter** (Unity to Godot Exporter) is a Unity Editor tool that exports selected assets from a Unity project into a ready-to-open Godot 4.6.1 project. The user right-clicks a folder in the Project window, selects "Export to Godot", and gets a complete Godot project. V1 scope covers static meshes (FBX), textures, materials (URP Lit/Unlit, legacy Standard, legacy built-in shaders, Unlit/* shaders), scenes, and prefabs. See [SPEC.md](SPEC.md) for the complete specification — it is the authoritative source for all conversion logic. If AGENTS.md and the spec disagree, follow SPEC.md.
 
 **Unity version:** Unity 6 (6000.3.12f1), C# 9 / .NET Standard 2.1
 **Target Godot version:** 4.6.1
@@ -52,9 +52,9 @@ All code lives in `Assets/Editor/U2GExporter/` with an Editor-only `.asmdef`:
 | `NodeConverter.cs` | Shared hierarchy traversal used by both SceneExporter and PrefabExporter |
 | `SceneExporter.cs` | Scene → .tscn, prefab instance detection, override application |
 | `PrefabExporter.cs` | Prefab → .tscn, FBX instancing, material overrides |
-| `MaterialExporter.cs` | Material → .tres (URP Lit, URP Unlit, legacy Standard) |
+| `MaterialExporter.cs` | Material → .tres (URP Lit/Unlit, Standard, Legacy Built-in, Unlit/*) |
 | `TextureExporter.cs` | Texture copy logic |
-| `FbxExporter.cs` | FBX copy + node name extraction |
+| `FbxExporter.cs` | FBX copy, node name extraction, FBX binary parsing, scale compensation |
 | `LightExporter.cs` | Light component → Godot light node data |
 | `CameraExporter.cs` | Camera component → Godot camera node data |
 | `CoordConvert.cs` | Coordinate system conversion math |
@@ -83,6 +83,10 @@ Unity won't allow closing the last loaded scene. `ExportMenu` checks `EditorScen
 ### AssetDatabase on Instantiated Clones
 
 `AssetDatabase.GetAssetPath()` does NOT work on instantiated GameObjects (returns empty). Use the original asset reference for any AssetDatabase queries. However, `sharedMaterials` on an instantiated clone still references the original material assets, so `GetAssetPath(mat)` works on those.
+
+### FBX Import Scale (Active Issue)
+
+Unity and Godot interpret FBX `UnitScaleFactor` metadata differently. Unity's `ModelImporter` has `useFileScale`, `useFileUnits`, `globalScale`, and `fileScale` settings that control how vertex data is scaled at import. Godot's ufbx importer has its own logic. The current `ComputeGodotScaleCompensation` approach (applied per-instance transform in `NodeConverter` and `PrefabExporter`) is **not fully correct** — it over-scales child FBX instances in hierarchical prefabs (e.g., wheels on a car body each get ×100). A correct solution likely needs to operate at the FBX import level (e.g., Godot `.import` files with `nodes/root_scale`) rather than per-instance transforms, but this is not yet implemented correctly.
 
 ## Serialization Rules
 

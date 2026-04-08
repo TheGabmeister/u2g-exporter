@@ -1,7 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "Bash(xargs -I {} sh -c 'echo \"=== {} ===\" && head -20 \"{}\"')"
+      "Bash(xargs -I {} sh -c 'echo \"=== {} ===\" && head -20 \"{}\"')",
+      "Bash(python3 -c ':*)",
+      "Bash(ls \"C:/dev/u2g-exporter/Assets/Test/SimpleTownLite/_Models/\"*.meta)"
     ]
   }
 }

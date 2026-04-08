@@ -160,21 +160,21 @@ The converter loads each FBX as a `GameObject` via `AssetDatabase.LoadAssetAtPat
 
 ### FBX Import Scale Compensation
 
-Unity and Godot interpret FBX unit metadata (`UnitScaleFactor`) differently. A common case: the FBX declares `UnitScaleFactor = 1.0` (units are centimeters) but the vertex data is actually in meters. Unity with `Use File Scale = false` ignores the metadata and uses raw vertex values (correct). Godot's ufbx importer trusts the metadata and bakes a cm→m conversion (×0.01) into the mesh vertex data, making the model ~100× too small.
+Unity and Godot interpret FBX unit metadata (`UnitScaleFactor`) differently when importing the same file:
 
-To compensate, the exporter parses the FBX binary to read `UnitScaleFactor` (centimeters per FBX unit) and computes a compensation scale:
+- **Godot (ufbx)** always applies the FBX's unit conversion: vertices are scaled by the file's native scale-to-meters factor (`fileScale`). For an FBX authored in centimeters (USF=1), this is ×0.01.
+- **Unity** with `Use File Scale = false` (common default) ignores the file's unit metadata and uses raw vertex values directly, scaled only by `globalScale` (typically 1.0).
+
+This mismatch means models can appear ~100× too small in Godot compared to Unity.
+
+**Fix:** The exporter generates a Godot `.import` file alongside each exported FBX. This file sets `nodes/root_scale` to compensate:
 
 ```
-godotConversion = UnitScaleFactor × 0.01
-compensation = unityLocalScale / godotConversion
+root_scale = globalScale / fileScale    (when Use File Scale is OFF)
+root_scale = globalScale                (when Use File Scale is ON)
 ```
 
-Where `unityLocalScale` is the prefab/scene instance's `localScale.x` (which reflects Unity's effective FBX import scale). This compensation is applied to the scale component of the `Transform3D` written on the FBX instance node.
-
-- **FBX-backed prefabs:** `PrefabExporter` computes the compensation from the FBX's `UnitScaleFactor` and the prefab root's `localScale`, then writes the compensated `Transform3D`.
-- **FBX instances in scenes:** `NodeConverter` computes the same compensation using `go.transform.localScale`, then writes the compensated `Transform3D`.
-- **Prefab instances in scenes:** `ConvertPrefabInstance` writes the scene placement transform (which inherits the prefab's compensated scale).
-- **FBX binary parsing:** `FbxExporter.ParseUnitScaleFactor` reads the FBX binary to find the `UnitScaleFactor` double value in the `GlobalSettings` section. Falls back to `1.0` if parsing fails.
+Where `globalScale` and `fileScale` are read from Unity's `ModelImporter` API. With `apply_root_scale=true` (default), Godot bakes this scale into vertex positions at import time, so all instances of the FBX display at the correct size without any transform hacks.
 
 ### Scene References to FBX
 
