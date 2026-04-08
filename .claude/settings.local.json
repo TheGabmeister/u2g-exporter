@@ -6,7 +6,8 @@
       "Bash(ls \"C:/dev/u2g-exporter/Assets/Test/SimpleTownLite/_Models/\"*.meta)",
       "Bash(find \"C:\\\\dev\\\\u2g-exporter\\\\Assets\\\\Editor\" -name \"*.cs\" -exec grep -l \"ModelImporter\\\\|AssetImporter\\\\|root_scale\" {} \\\\;)",
       "Bash(find \"C:\\\\dev\\\\u2g-exporter\\\\Assets\\\\Editor\" -name \"*.cs\" -type f -exec grep -l \"root_scale\" {} \\\\;)",
-      "Bash(find C:/dev/u2g-exporter/Assets/Editor -name \"*.cs\" -type f -exec grep -l \"root_scale\" {} \\\\;)"
+      "Bash(find C:/dev/u2g-exporter/Assets/Editor -name \"*.cs\" -type f -exec grep -l \"root_scale\" {} \\\\;)",
+      "Bash(git checkout:*)"
     ]
   }
 }
