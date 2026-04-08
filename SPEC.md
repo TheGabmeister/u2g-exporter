@@ -158,6 +158,14 @@ V1 supports **only** meshes whose source asset path ends with `.fbx`.
 
 The converter loads each FBX as a `GameObject` via `AssetDatabase.LoadAssetAtPath<GameObject>(fbxPath)` and traverses its `Transform` hierarchy to read node names. These names are used to construct material override paths in `.tscn` files.
 
+### FBX Import Scale Compensation
+
+Unity and Godot apply different scale transformations when importing the same FBX file (due to differing handling of `UnitScaleFactor`, `Convert Units`, and `Use File Scale` settings). To ensure models appear at the correct size in Godot:
+
+- **FBX-backed prefabs:** The `PrefabExporter` reads the instantiated prefab root's `localPosition`, `localRotation`, and `localScale` (which includes Unity's FBX import scale from `useFileUnits` conversion) and writes it as the root `Transform3D` on the FBX instance node. This overrides Godot's FBX import root transform with Unity's.
+- **FBX instances in scenes:** The `NodeConverter` already writes the scene-level transform from `go.transform`, which includes the FBX import scale. No additional compensation needed.
+- **Prefab instances in scenes:** The scene-level transform written by `ConvertPrefabInstance` includes the FBX import scale (inherited by the prefab variant from the FBX model). This overrides the prefab `.tscn`'s root transform.
+
 ### Scene References to FBX
 
 When a Unity scene instances a mesh from an FBX file, the Godot scene will use `instance = ExtResource(...)` to load the entire FBX as a sub-scene at the correct transform. Individual mesh selection within the FBX is not performed — the whole model is instanced.

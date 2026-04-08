@@ -40,6 +40,15 @@ namespace U2GExporter
                     string resPath = PathUtil.FbxToGodotResPath(fbxPath);
                     string extId = writer.AddExtResource("PackedScene", resPath);
                     writer.AddRootInstanceNode(sceneName, extId);
+
+                    // Write the prefab root's transform — this captures Unity's FBX
+                    // import scale (useFileUnits conversion) which may differ from
+                    // Godot's FBX importer. Setting it here overrides Godot's FBX
+                    // root transform with Unity's known-correct one.
+                    float[] rootTransform = CoordConvert.ConvertTransform(instance.transform);
+                    if (rootTransform != null)
+                        writer.AddPropertyTransform(rootTransform);
+
                     writer.AddBlankLine();
 
                     // Use the instantiated copy for material traversal (has resolved children)
