@@ -9,65 +9,86 @@ namespace U2GExporter
     {
         public static void Export(string assetPath, string outputDir, SkipReport skipReport)
         {
-            var prefabRoot = AssetDatabase.LoadAssetAtPath<GameObject>(assetPath);
-            if (prefabRoot == null)
+            var prefabAsset = AssetDatabase.LoadAssetAtPath<GameObject>(assetPath);
+            if (prefabAsset == null)
             {
                 Debug.LogError($"[U2G][ERROR] Failed to load prefab: {assetPath}");
                 return;
             }
 
-            var writer = new TscnWriter();
-            string sceneName = Path.GetFileNameWithoutExtension(assetPath);
+            // Instantiate a temporary copy to get the full hierarchy with
+            // resolved children and material overrides (LoadAssetAtPath alone
+            // doesn't resolve FBX children on prefab variants).
+            var instance = Object.Instantiate(prefabAsset);
+            instance.hideFlags = HideFlags.HideAndDontSave;
 
-            var nodeConverter = new NodeConverter(writer, skipReport);
-
-            // Convert the prefab root as the scene root node.
-            // Returns true if root is FBX-backed (children are part of the FBX instance).
-            bool rootIsFbxInstance = ConvertPrefabRoot(prefabRoot, sceneName, writer, skipReport);
-            writer.AddBlankLine();
-
-            if (rootIsFbxInstance)
+            try
             {
-                // Children are part of the FBX instance — don't re-process them.
-                // Instead, scan for material overrides on descendants.
-                WriteFbxDescendantMaterialOverrides(prefabRoot.transform, ".", writer);
+                var writer = new TscnWriter();
+                string sceneName = Path.GetFileNameWithoutExtension(assetPath);
+
+                var nodeConverter = new NodeConverter(writer, skipReport);
+
+                // Use the asset (not instance) for FBX detection — AssetDatabase
+                // only works on assets, not instantiated clones.
+                string fbxPath = FindFbxSource(prefabAsset);
+                Debug.Log($"[U2G][DEBUG] FindFbxSource result: '{fbxPath ?? "null"}'");
+
+                if (fbxPath != null)
+                {
+                    // FBX-backed prefab: instance the FBX as the scene root
+                    string resPath = PathUtil.FbxToGodotResPath(fbxPath);
+                    string extId = writer.AddExtResource("PackedScene", resPath);
+                    writer.AddRootInstanceNode(sceneName, extId);
+                    writer.AddBlankLine();
+
+                    // Use the instantiated copy for material traversal (has resolved children)
+                    Debug.Log($"[U2G][DEBUG] Instance childCount={instance.transform.childCount}");
+                    var allRenderers = instance.GetComponentsInChildren<MeshRenderer>(true);
+                    Debug.Log($"[U2G][DEBUG] Total MeshRenderers found: {allRenderers.Length}");
+                    foreach (var r in allRenderers)
+                    {
+                        Debug.Log($"[U2G][DEBUG]   Renderer on '{r.gameObject.name}', isRoot={r.transform == instance.transform}, matCount={r.sharedMaterials?.Length ?? 0}");
+                        if (r.sharedMaterials != null)
+                        {
+                            for (int dm = 0; dm < r.sharedMaterials.Length; dm++)
+                            {
+                                var dmat = r.sharedMaterials[dm];
+                                string dpath = dmat != null ? AssetDatabase.GetAssetPath(dmat) : "(null mat)";
+                                bool isFbxMat = dpath.EndsWith(".fbx", System.StringComparison.OrdinalIgnoreCase);
+                                Debug.Log($"[U2G][DEBUG]     mat[{dm}] name='{dmat?.name}' path='{dpath}' isFbxEmbedded={isFbxMat}");
+                            }
+                        }
+                    }
+                    WriteFbxInstanceMaterialOverrides(instance, fbxPath, writer);
+                }
+                else
+                {
+                    // Non-FBX prefab
+                    ConvertNonFbxPrefabRoot(instance, sceneName, writer, skipReport);
+                    writer.AddBlankLine();
+
+                    // Traverse children — flatten nested prefabs one level deep
+                    var siblingNames = new HashSet<string>();
+                    ConvertPrefabChildren(instance, ".", siblingNames, nodeConverter, skipReport, 0);
+                }
+
+                // Write output
+                string relativePath = PathUtil.UnityToGodotRelativePath(assetPath);
+                relativePath = Path.ChangeExtension(relativePath, ".tscn");
+                string destPath = Path.Combine(outputDir, relativePath);
+                writer.Write(destPath);
+
+                Debug.Log($"[U2G][INFO] Converted prefab: {assetPath}");
             }
-            else
+            finally
             {
-                // Traverse children — flatten nested prefabs one level deep
-                var siblingNames = new HashSet<string>();
-                ConvertPrefabChildren(prefabRoot, ".", siblingNames, nodeConverter, skipReport, 0);
+                Object.DestroyImmediate(instance);
             }
-
-            // Write output
-            string relativePath = PathUtil.UnityToGodotRelativePath(assetPath);
-            relativePath = Path.ChangeExtension(relativePath, ".tscn");
-            string destPath = Path.Combine(outputDir, relativePath);
-            writer.Write(destPath);
-
-            Debug.Log($"[U2G][INFO] Converted prefab: {assetPath}");
         }
 
-        /// <summary>
-        /// Converts the prefab root as the scene root node.
-        /// Returns true if the root is an FBX instance (children are part of the FBX).
-        /// </summary>
-        static bool ConvertPrefabRoot(GameObject root, string sceneName, TscnWriter writer, SkipReport skipReport)
+        static void ConvertNonFbxPrefabRoot(GameObject root, string sceneName, TscnWriter writer, SkipReport skipReport)
         {
-            // Check if any node in the hierarchy is FBX-backed.
-            // For FBX prefabs, the mesh is often on a child (e.g., Suzanne) not the root.
-            string fbxPath = FindFbxSource(root);
-
-            if (fbxPath != null)
-            {
-                // FBX-backed prefab: instance the FBX as the scene root
-                string resPath = PathUtil.FbxToGodotResPath(fbxPath);
-                string extId = writer.AddExtResource("PackedScene", resPath);
-                writer.AddRootInstanceNode(sceneName, extId);
-                return true;
-            }
-
-            // Non-FBX root
             var light = root.GetComponent<Light>();
             var camera = root.GetComponent<Camera>();
 
@@ -95,83 +116,116 @@ namespace U2GExporter
                 Debug.LogWarning($"[U2G][WARN] Prefab root '{root.name}' has non-FBX mesh: {meshInfo}. Created Node3D.");
                 skipReport.Add("Unsupported Mesh Sources", $"{root.name}: {meshInfo}");
             }
-
-            return false;
         }
 
         /// <summary>
-        /// Finds the FBX source for this prefab by checking the root and its descendants.
+        /// Finds the FBX source for this prefab. Checks:
+        /// 1. The prefab's corresponding source object (for prefab variants of FBX models)
+        /// 2. MeshFilter references on root and children
         /// </summary>
-        static string FindFbxSource(GameObject root)
+        static string FindFbxSource(GameObject prefabAsset)
         {
-            // Check root first
-            string fbxPath = GetFbxPathFromMesh(root);
-            if (fbxPath != null) return fbxPath;
-
-            // Check children (FBX prefabs often have mesh on a child node)
-            for (int i = 0; i < root.transform.childCount; i++)
+            // Check if this prefab is a variant of an FBX model
+            var source = PrefabUtility.GetCorrespondingObjectFromSource(prefabAsset);
+            if (source != null)
             {
-                fbxPath = GetFbxPathFromMesh(root.transform.GetChild(i).gameObject);
-                if (fbxPath != null) return fbxPath;
+                string sourcePath = AssetDatabase.GetAssetPath(source);
+                if (!string.IsNullOrEmpty(sourcePath) && sourcePath.EndsWith(".fbx", System.StringComparison.OrdinalIgnoreCase))
+                    return sourcePath;
+            }
+
+            // Check MeshFilter references on root and children
+            var meshFilters = prefabAsset.GetComponentsInChildren<MeshFilter>(true);
+            foreach (var mf in meshFilters)
+            {
+                if (mf.sharedMesh == null) continue;
+                string meshAssetPath = AssetDatabase.GetAssetPath(mf.sharedMesh);
+                if (!string.IsNullOrEmpty(meshAssetPath) && meshAssetPath.EndsWith(".fbx", System.StringComparison.OrdinalIgnoreCase))
+                    return meshAssetPath;
             }
 
             return null;
         }
 
-        static string GetFbxPathFromMesh(GameObject go)
-        {
-            var meshFilter = go.GetComponent<MeshFilter>();
-            if (meshFilter == null || meshFilter.sharedMesh == null) return null;
-
-            string meshAssetPath = AssetDatabase.GetAssetPath(meshFilter.sharedMesh);
-            if (!string.IsNullOrEmpty(meshAssetPath) && meshAssetPath.EndsWith(".fbx", System.StringComparison.OrdinalIgnoreCase))
-                return meshAssetPath;
-
-            return null;
-        }
-
         /// <summary>
-        /// Walks descendants of an FBX instance root and writes material override nodes
-        /// for any MeshRenderer that has materials assigned.
+        /// Writes material override nodes for an FBX-backed prefab.
+        /// Checks the root's MeshRenderer and all descendants. Uses FBX node names
+        /// to target the correct child node in the Godot FBX instance.
         /// </summary>
-        static void WriteFbxDescendantMaterialOverrides(Transform parent, string parentPath, TscnWriter writer)
+        static void WriteFbxInstanceMaterialOverrides(GameObject instance, string fbxPath, TscnWriter writer)
         {
-            for (int i = 0; i < parent.childCount; i++)
+            // Load the FBX to get the child node names (Godot's FBX structure)
+            var fbxNodeNames = FbxExporter.GetNodeNames(fbxPath);
+            string fbxChildName = fbxNodeNames.Count > 0 ? fbxNodeNames[0] : null;
+
+            // Collect all MeshRenderers in the prefab instance
+            var renderers = instance.GetComponentsInChildren<MeshRenderer>(true);
+
+            foreach (var renderer in renderers)
             {
-                Transform child = parent.GetChild(i);
-                string childPath = parentPath == "." ? child.name : parentPath + "/" + child.name;
+                if (renderer.sharedMaterials == null) continue;
 
-                var renderer = child.GetComponent<MeshRenderer>();
-                if (renderer != null && renderer.sharedMaterials != null)
+                bool hasOverrides = false;
+                for (int m = 0; m < renderer.sharedMaterials.Length; m++)
                 {
-                    bool hasOverrides = false;
-                    for (int m = 0; m < renderer.sharedMaterials.Length; m++)
+                    Material mat = renderer.sharedMaterials[m];
+                    if (mat == null) continue;
+
+                    string matPath = AssetDatabase.GetAssetPath(mat);
+                    if (string.IsNullOrEmpty(matPath) || matPath.EndsWith(".fbx", System.StringComparison.OrdinalIgnoreCase))
+                        continue; // Skip FBX-embedded default materials
+
+                    if (!hasOverrides)
                     {
-                        Material mat = renderer.sharedMaterials[m];
-                        if (mat == null) continue;
+                        // Determine the override target node name.
+                        // If the renderer is on the root, target the FBX's first child node.
+                        // If it's on a child, use the child's own name.
+                        string targetName = (renderer.transform == instance.transform)
+                            ? fbxChildName
+                            : renderer.transform.name;
 
-                        string matPath = AssetDatabase.GetAssetPath(mat);
-                        if (string.IsNullOrEmpty(matPath) || matPath.EndsWith(".fbx", System.StringComparison.OrdinalIgnoreCase))
-                            continue; // Skip FBX-embedded default materials
-
-                        if (!hasOverrides)
+                        if (targetName == null)
                         {
-                            writer.AddOverrideNode(child.name, parentPath);
-                            hasOverrides = true;
+                            Debug.LogWarning($"[U2G][WARN] Cannot determine FBX child node for material override on '{renderer.name}'.");
+                            break;
                         }
 
-                        string matResPath = PathUtil.MaterialToGodotResPath(matPath);
-                        string matExtId = writer.AddExtResource("Material", matResPath);
-                        writer.AddPropertyExtResource($"surface_material_override/{m}", matExtId);
+                        // Compute parent path for the override node
+                        string overrideParent = GetOverrideParentPath(instance.transform, renderer.transform);
+                        writer.AddOverrideNode(targetName, overrideParent);
+                        hasOverrides = true;
                     }
 
-                    if (hasOverrides)
-                        writer.AddBlankLine();
+                    string matResPath = PathUtil.MaterialToGodotResPath(matPath);
+                    string matExtId = writer.AddExtResource("Material", matResPath);
+                    writer.AddPropertyExtResource($"surface_material_override/{m}", matExtId);
                 }
 
-                // Recurse into deeper children
-                WriteFbxDescendantMaterialOverrides(child, childPath, writer);
+                if (hasOverrides)
+                    writer.AddBlankLine();
             }
+        }
+
+        /// <summary>
+        /// Computes the Godot parent path for an override node within an FBX instance.
+        /// If the renderer is on the root, parent is ".".
+        /// If it's on a child, parent is the path from root to the renderer's parent.
+        /// </summary>
+        static string GetOverrideParentPath(Transform root, Transform target)
+        {
+            if (target == root)
+                return ".";
+
+            // Build path from root to target's parent
+            var parts = new List<string>();
+            Transform current = target.parent;
+            while (current != null && current != root)
+            {
+                parts.Add(current.name);
+                current = current.parent;
+            }
+            parts.Reverse();
+            return parts.Count == 0 ? "." : string.Join("/", parts);
         }
 
         static void ConvertPrefabChildren(GameObject go, string parentPath, HashSet<string> siblingNames,

@@ -24,6 +24,8 @@ namespace U2GExporter
         /// <summary>
         /// Loads an FBX as a GameObject and extracts the hierarchy of node names.
         /// Returns a list of child node names (first-level children of the root).
+        /// For single-mesh FBX files where Unity doesn't resolve children on the asset,
+        /// instantiates a temporary copy to get the real hierarchy.
         /// </summary>
         public static List<string> GetNodeNames(string fbxPath)
         {
@@ -33,6 +35,32 @@ namespace U2GExporter
                 return names;
 
             CollectNodeNames(go.transform, names);
+
+            // Unity may not resolve FBX children on the asset itself.
+            // Instantiate temporarily to get the full hierarchy.
+            if (names.Count == 0)
+            {
+                var instance = Object.Instantiate(go);
+                instance.hideFlags = HideFlags.HideAndDontSave;
+                try
+                {
+                    CollectNodeNames(instance.transform, names);
+                }
+                finally
+                {
+                    Object.DestroyImmediate(instance);
+                }
+            }
+
+            // If still empty (single-mesh FBX where the root IS the mesh),
+            // use the mesh name from the MeshFilter as Godot creates a child with that name.
+            if (names.Count == 0)
+            {
+                var mf = go.GetComponent<MeshFilter>();
+                if (mf != null && mf.sharedMesh != null)
+                    names.Add(mf.sharedMesh.name);
+            }
+
             return names;
         }
 
