@@ -81,8 +81,13 @@ namespace U2GExporter
                 if (isInactive || (meshRenderer != null && !meshRenderer.enabled))
                     _writer.AddPropertyBool("visible", false);
 
-                // Material overrides via child node overrides
-                WriteFbxMaterialOverrides(fbxPath, meshRenderer, nodeName, parentPath);
+                // Material overrides: for multi-mesh FBX (root + children from same FBX),
+                // write root materials directly on the instance node. For single-mesh FBX,
+                // write a child override node targeting the mesh child.
+                if (HasChildrenFromSameFbx(go, fbxPath))
+                    WriteFbxRootMaterials(meshRenderer, fbxPath);
+                else
+                    WriteFbxMaterialOverrides(fbxPath, meshRenderer, nodeName, parentPath);
             }
             else if (hasMesh && fbxPath == null)
             {
@@ -156,11 +161,21 @@ namespace U2GExporter
 
             _writer.AddBlankLine();
 
-            // Recurse into children
+            // Recurse into children.
+            // If this node is an FBX instance, children from the same FBX are part of
+            // the instance and should only get material override nodes, not separate
+            // FBX instances. Other children are processed normally.
             var childSiblingNames = new HashSet<string>();
             for (int i = 0; i < go.transform.childCount; i++)
             {
                 Transform child = go.transform.GetChild(i);
+
+                if (hasMesh && fbxPath != null && IsPartOfSameFbx(child.gameObject, fbxPath))
+                {
+                    WriteFbxChildMaterialOverrides(child.gameObject, fbxPath, currentPath);
+                    continue;
+                }
+
                 ConvertHierarchy(child.gameObject, currentPath, childSiblingNames);
             }
         }
@@ -301,6 +316,96 @@ namespace U2GExporter
             {
                 namePart = path;
                 parentPart = null;
+            }
+        }
+
+        /// <summary>
+        /// Checks if a GameObject's mesh is from the specified FBX file.
+        /// </summary>
+        static bool IsPartOfSameFbx(GameObject go, string fbxPath)
+        {
+            var mf = go.GetComponent<MeshFilter>();
+            if (mf == null || mf.sharedMesh == null) return false;
+            string meshAssetPath = AssetDatabase.GetAssetPath(mf.sharedMesh);
+            return !string.IsNullOrEmpty(meshAssetPath) &&
+                   meshAssetPath.Equals(fbxPath, System.StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>
+        /// Checks if any direct children of a GameObject reference meshes from the same FBX.
+        /// </summary>
+        static bool HasChildrenFromSameFbx(GameObject go, string fbxPath)
+        {
+            for (int i = 0; i < go.transform.childCount; i++)
+            {
+                if (IsPartOfSameFbx(go.transform.GetChild(i).gameObject, fbxPath))
+                    return true;
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// Writes material override properties directly on the current node (the FBX instance root).
+        /// Used for multi-mesh FBX files where the root FBX node has a mesh and Godot's import
+        /// makes the root a MeshInstance3D.
+        /// </summary>
+        void WriteFbxRootMaterials(MeshRenderer renderer, string fbxPath)
+        {
+            if (renderer.sharedMaterials == null) return;
+            for (int m = 0; m < renderer.sharedMaterials.Length; m++)
+            {
+                Material mat = renderer.sharedMaterials[m];
+                if (mat == null) continue;
+                string matPath = AssetDatabase.GetAssetPath(mat);
+                if (string.IsNullOrEmpty(matPath)) continue;
+                if (matPath.EndsWith(".fbx", System.StringComparison.OrdinalIgnoreCase)) continue;
+
+                string matResPath = PathUtil.MaterialToGodotResPath(matPath);
+                string matExtId = _writer.AddExtResource("Material", matResPath);
+                _writer.AddPropertyExtResource($"surface_material_override/{m}", matExtId);
+            }
+        }
+
+        /// <summary>
+        /// Writes material override nodes for a child of an FBX instance, using the child's
+        /// name to target the corresponding node inside the FBX. Recurses into grandchildren
+        /// that are also part of the same FBX.
+        /// </summary>
+        void WriteFbxChildMaterialOverrides(GameObject child, string fbxPath, string fbxInstancePath)
+        {
+            var renderer = child.GetComponent<MeshRenderer>();
+            if (renderer != null && renderer.sharedMaterials != null)
+            {
+                bool hasOverrides = false;
+                for (int m = 0; m < renderer.sharedMaterials.Length; m++)
+                {
+                    Material mat = renderer.sharedMaterials[m];
+                    if (mat == null) continue;
+                    string matPath = AssetDatabase.GetAssetPath(mat);
+                    if (string.IsNullOrEmpty(matPath)) continue;
+                    if (matPath.EndsWith(".fbx", System.StringComparison.OrdinalIgnoreCase)) continue;
+
+                    if (!hasOverrides)
+                    {
+                        _writer.AddOverrideNode(child.name, fbxInstancePath);
+                        hasOverrides = true;
+                    }
+
+                    string matResPath = PathUtil.MaterialToGodotResPath(matPath);
+                    string matExtId = _writer.AddExtResource("Material", matResPath);
+                    _writer.AddPropertyExtResource($"surface_material_override/{m}", matExtId);
+                }
+                if (hasOverrides)
+                    _writer.AddBlankLine();
+            }
+
+            // Recurse into grandchildren that are also part of the same FBX
+            string childPath = fbxInstancePath + "/" + child.name;
+            for (int i = 0; i < child.transform.childCount; i++)
+            {
+                var grandchild = child.transform.GetChild(i).gameObject;
+                if (IsPartOfSameFbx(grandchild, fbxPath))
+                    WriteFbxChildMaterialOverrides(grandchild, fbxPath, childPath);
             }
         }
 
