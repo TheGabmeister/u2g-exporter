@@ -29,6 +29,22 @@ namespace U2GExporter
                 case "Standard":
                     WriteLegacyStandard(material, writer);
                     break;
+                case "Legacy Shaders/Diffuse":
+                case "Legacy Shaders/Specular":
+                case "Legacy Shaders/Bumped Diffuse":
+                case "Legacy Shaders/Bumped Specular":
+                case "Mobile/Diffuse":
+                case "Mobile/Bumped Diffuse":
+                case "Mobile/Bumped Specular":
+                case "Mobile/Unlit (Supports Lightmap)":
+                    WriteLegacyBuiltin(material, writer, transparent: false);
+                    break;
+                case "Legacy Shaders/Transparent/Diffuse":
+                case "Legacy Shaders/Transparent/Specular":
+                case "Legacy Shaders/Transparent/Bumped Diffuse":
+                case "Legacy Shaders/Transparent/Bumped Specular":
+                    WriteLegacyBuiltin(material, writer, transparent: true);
+                    break;
                 default:
                     Debug.LogWarning($"[U2G][WARN] Unknown shader '{shaderName}' on material '{assetPath}'. Using default white material.");
                     WriteDefaultWhite(writer);
@@ -210,6 +226,38 @@ namespace U2GExporter
 
             // Occlusion
             WriteOcclusion(mat, w, "_OcclusionMap", null);
+
+            // UV tiling/offset
+            WriteUVTilingOffset(mat, w, "_MainTex");
+        }
+
+        static void WriteLegacyBuiltin(Material mat, TresWriter w, bool transparent)
+        {
+            // Albedo
+            Color color = mat.HasProperty("_Color") ? mat.GetColor("_Color") : Color.white;
+            w.AddPropertyColor("albedo_color", color.r, color.g, color.b, color.a);
+
+            WriteTextureProperty(mat, w, "_MainTex", "albedo_texture", "Texture2D");
+
+            // Shininess → roughness (Specular / Bumped Specular variants)
+            if (mat.HasProperty("_Shininess"))
+                w.AddPropertyFloat("roughness", 1f - mat.GetFloat("_Shininess"));
+
+            // Normal map (Bumped variants)
+            if (mat.HasProperty("_BumpMap") && mat.GetTexture("_BumpMap") != null)
+            {
+                w.AddPropertyBool("normal_enabled", true);
+                string id = AddTextureExtResource(mat, w, "_BumpMap");
+                if (id != null)
+                    w.AddPropertyExtResource("normal_texture", id);
+            }
+
+            // Emission (if present on this shader)
+            WriteEmission(mat, w, "_EmissionColor", "_EmissionMap");
+
+            // Transparency (Transparent/* variants)
+            if (transparent)
+                w.AddPropertyInt("transparency", 1); // TRANSPARENCY_ALPHA
 
             // UV tiling/offset
             WriteUVTilingOffset(mat, w, "_MainTex");

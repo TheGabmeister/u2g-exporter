@@ -218,13 +218,29 @@ Assets/Characters/Materials/Glass.mat   →  Characters/Materials/Glass.tres
 
 ### Shader Scope
 
-Three shader families are supported:
+Four shader families are supported:
 
 | Unity Shader | Godot Material | Notes |
 |---|---|---|
 | `Universal Render Pipeline/Lit` | `StandardMaterial3D` | Full PBR mapping |
 | `Universal Render Pipeline/Unlit` | `StandardMaterial3D` (unshaded) | `shading_mode = SHADING_MODE_UNSHADED` |
 | `Standard` (Built-in) | `StandardMaterial3D` | Legacy Built-in pipeline, full PBR |
+| Legacy Built-in shaders | `StandardMaterial3D` | Diffuse/Specular/Bumped/Transparent families + Mobile variants |
+
+The following legacy built-in shader names are recognized:
+
+- `Legacy Shaders/Diffuse`
+- `Legacy Shaders/Specular`
+- `Legacy Shaders/Bumped Diffuse`
+- `Legacy Shaders/Bumped Specular`
+- `Legacy Shaders/Transparent/Diffuse`
+- `Legacy Shaders/Transparent/Specular`
+- `Legacy Shaders/Transparent/Bumped Diffuse`
+- `Legacy Shaders/Transparent/Bumped Specular`
+- `Mobile/Diffuse`
+- `Mobile/Bumped Diffuse`
+- `Mobile/Bumped Specular`
+- `Mobile/Unlit (Supports Lightmap)`
 
 Unknown/unsupported shaders → create a default white `StandardMaterial3D` + log a warning.
 
@@ -282,6 +298,27 @@ Additional V1 rules for legacy Standard:
 - If `_MetallicGlossMap` is present, write `metallic_texture` and `metallic_texture_channel = TEXTURE_CHANNEL_RED`.
 - V1 does **not** write `roughness_texture`; roughness comes from the scalar glossiness inversion only.
 - If `_OcclusionMap` is present, write `ao_enabled = true`, `ao_texture`, and `ao_texture_channel = TEXTURE_CHANNEL_GREEN`.
+
+### Property Mapping: Legacy Built-in Shaders → StandardMaterial3D
+
+These shaders predate the Standard shader and have a smaller property set. The exporter reads whichever properties exist on the material.
+
+| Unity Property | Godot Property | Conversion | Present on |
+|---|---|---|---|
+| `_Color` | `albedo_color` | Direct RGBA | All |
+| `_MainTex` | `albedo_texture` | Texture reference | All |
+| `_Shininess` | `roughness` | `roughness = 1.0 - shininess` | Specular, Bumped Specular |
+| `_BumpMap` | `normal_enabled` + `normal_texture` | Set `normal_enabled = true`, texture reference | Bumped Diffuse, Bumped Specular |
+| `_EmissionColor` | `emission_enabled` + `emission` + `emission_energy_multiplier` | Same as URP/Lit emission logic | If present on material |
+| `_EmissionMap` | `emission_texture` | Texture reference | If present on material |
+| (Transparent variants) | `transparency` | `TRANSPARENCY_ALPHA` (= 1) | Transparent/* shader names |
+| `_MainTex` tiling/offset | `uv1_scale` + `uv1_offset` | `material.GetTextureScale` / `GetTextureOffset` | All |
+
+Additional V1 rules for legacy built-in shaders:
+
+- `Mobile/Unlit (Supports Lightmap)` is mapped identically to `Mobile/Diffuse` — it uses the same `_MainTex`/`_Color` properties. The lightmap-specific features are not converted.
+- `_SpecColor` is present on Specular variants but is not mapped — Godot's `StandardMaterial3D` has no direct specular color equivalent.
+- Properties are read via `HasProperty` checks, so a single code path handles all legacy built-in variants.
 
 ### Output Format: .tres
 

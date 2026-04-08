@@ -76,3 +76,5 @@ crashlytics-build.properties
 
 .vsconfig
 Godot
+Assets/SimpleCar
+Assets/SimpleCar.meta
