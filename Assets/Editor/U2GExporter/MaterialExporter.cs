@@ -21,6 +21,7 @@ namespace U2GExporter
             switch (shaderName)
             {
                 case "Universal Render Pipeline/Lit":
+                case "Universal Render Pipeline/Simple Lit":
                     WriteURPLit(material, writer);
                     break;
                 case "Universal Render Pipeline/Unlit":
