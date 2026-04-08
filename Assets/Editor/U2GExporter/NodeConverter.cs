@@ -66,16 +66,11 @@ namespace U2GExporter
                 string extId = _writer.AddExtResource("PackedScene", resPath);
                 _writer.AddInstanceNode(nodeName, parentPath, extId);
 
-                // Compensate for FBX unit scale differences between Unity/Godot.
-                float comp = FbxExporter.ComputeGodotScaleCompensation(
-                    fbxPath, go.transform.localScale.x);
-                Vector3 compensatedScale = go.transform.localScale * comp;
-                float[] t = CoordConvert.ConvertTransform(
-                    go.transform.localPosition,
-                    go.transform.localRotation,
-                    compensatedScale);
-                _writer.AddPropertyTransform(t
-                    ?? new float[] { 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0 });
+                // Scale compensation is handled at the FBX file level
+                // (patched UnitScaleFactor), so use the original transform.
+                float[] t = CoordConvert.ConvertTransform(go.transform);
+                if (t != null)
+                    _writer.AddPropertyTransform(t);
 
                 // Visibility
                 if (isInactive || (meshRenderer != null && !meshRenderer.enabled))

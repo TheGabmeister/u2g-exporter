@@ -40,22 +40,11 @@ namespace U2GExporter
                     string extId = writer.AddExtResource("PackedScene", resPath);
                     writer.AddRootInstanceNode(sceneName, extId);
 
-                    // Compensate for FBX unit scale differences between Unity and
-                    // Godot. Godot's ufbx bakes UnitScaleFactor conversion into vertex
-                    // data, which produces wrong scale when the FBX metadata doesn't
-                    // match the actual vertex units. Apply the compensation as the
-                    // root transform.
-                    float comp = FbxExporter.ComputeGodotScaleCompensation(
-                        fbxPath, instance.transform.localScale.x);
-                    Vector3 compensatedScale = instance.transform.localScale * comp;
-                    float[] rootTransform = CoordConvert.ConvertTransform(
-                        instance.transform.localPosition,
-                        instance.transform.localRotation,
-                        compensatedScale);
-                    // Always write (even for identity-ish results) to override
-                    // Godot's FBX import root transform.
-                    writer.AddPropertyTransform(rootTransform
-                        ?? new float[] { 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0 });
+                    // Scale compensation is handled at the FBX file level
+                    // (patched UnitScaleFactor), so use the original transform.
+                    float[] rootTransform = CoordConvert.ConvertTransform(instance.transform);
+                    if (rootTransform != null)
+                        writer.AddPropertyTransform(rootTransform);
 
                     // Material overrides: for multi-mesh FBX the root is a MeshInstance3D
                     // in Godot, so write root materials directly on the instance node,

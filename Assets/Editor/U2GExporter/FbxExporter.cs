@@ -21,6 +21,10 @@ namespace U2GExporter
             Directory.CreateDirectory(Path.GetDirectoryName(destPath));
             File.Copy(assetPath, destPath, true);
 
+            // Patch UnitScaleFactor in the exported copy so Godot imports at the
+            // same visual scale as Unity — no per-instance transform hacks needed.
+            PatchUnitScaleFactorForGodot(assetPath, destPath);
+
             Debug.Log($"[U2G][INFO] Copied FBX: {assetPath}");
         }
 
@@ -109,100 +113,103 @@ namespace U2GExporter
         }
 
         /// <summary>
-        /// Computes the scale factor needed to compensate for the difference between
-        /// Unity's and Godot's FBX import. Godot's ufbx importer bakes the FBX
-        /// UnitScaleFactor conversion into vertex data, which can produce wrong results
-        /// when the FBX metadata doesn't match the actual vertex units.
+        /// Patches the UnitScaleFactor in a copied FBX file so that Godot's import
+        /// (vertices × USF × 0.01) produces the same visual scale as Unity.
         ///
-        /// Returns the uniform scale to apply on the Godot side so that the model
-        /// matches Unity's display size.
+        /// Unity's effective vertex scale depends on ModelImporter settings:
+        ///   useFileScale ON  → fileScale × globalScale
+        ///   useFileScale OFF → globalScale only
+        /// We set USF_new so that USF_new × 0.01 = Unity's effective scale.
         /// </summary>
-        public static float ComputeGodotScaleCompensation(string fbxAssetPath, float unityLocalScale)
+        static void PatchUnitScaleFactorForGodot(string unityAssetPath, string destFbxPath)
         {
-            // UnitScaleFactor defines centimeters per FBX unit.
-            // Godot converts to meters: vertex * USF * 0.01
-            // Unity's effective scale is unityLocalScale (from the prefab/scene transform).
-            // Compensation = unityLocalScale / (USF * 0.01)
-            float usf = ParseUnitScaleFactor(fbxAssetPath);
-            float godotConversion = usf * 0.01f;
-            if (godotConversion <= 0f) return 1f;
+            var importer = AssetImporter.GetAtPath(unityAssetPath) as ModelImporter;
+            if (importer == null) return;
 
-            float compensation = unityLocalScale / godotConversion;
-            return Mathf.Abs(compensation - 1f) < 1e-4f ? 1f : compensation;
-        }
+            double targetUsf = importer.useFileScale
+                ? (double)importer.fileScale * importer.globalScale / 0.01
+                : (double)importer.globalScale / 0.01;
 
-        /// <summary>
-        /// Parses the UnitScaleFactor from an FBX binary file.
-        /// UnitScaleFactor defines how many centimeters one FBX unit represents.
-        /// Common values: 1.0 (cm), 2.54 (inches), 100.0 (meters).
-        /// Returns 1.0 if the value cannot be parsed.
-        /// </summary>
-        static float ParseUnitScaleFactor(string fbxPath)
-        {
             try
             {
-                byte[] data = File.ReadAllBytes(fbxPath);
-                byte[] needle = Encoding.ASCII.GetBytes("UnitScaleFactor");
+                byte[] data = File.ReadAllBytes(destFbxPath);
+                int offset = FindUnitScaleFactorOffset(data);
+                if (offset < 0) return;
 
-                int idx = FindByteSequence(data, needle, 0);
-                if (idx < 0) return 1f;
+                double currentUsf = BitConverter.ToDouble(data, offset);
+                if (Math.Abs(currentUsf - targetUsf) < 1e-6) return;
 
-                // Verify this is not "OriginalUnitScaleFactor" by checking the preceding byte.
-                // In FBX binary, the property name is preceded by a 1-byte 'S' type marker
-                // and a 4-byte length. If the character before our match is part of "Original",
-                // skip to the next occurrence.
-                if (idx > 0 && data[idx - 1] != needle.Length)
-                {
-                    // Check if we matched inside "OriginalUnitScaleFactor"
-                    byte[] original = Encoding.ASCII.GetBytes("Original");
-                    if (idx >= original.Length)
-                    {
-                        bool isOriginal = true;
-                        for (int i = 0; i < original.Length; i++)
-                        {
-                            if (data[idx - original.Length + i] != original[i])
-                            {
-                                isOriginal = false;
-                                break;
-                            }
-                        }
-                        if (isOriginal)
-                            idx = FindByteSequence(data, needle, idx + needle.Length);
-                    }
-                }
+                byte[] newBytes = BitConverter.GetBytes(targetUsf);
+                Buffer.BlockCopy(newBytes, 0, data, offset, 8);
+                File.WriteAllBytes(destFbxPath, data);
 
-                if (idx < 0) return 1f;
-
-                // Navigate past the property name to the value.
-                // FBX P-node property format after name:
-                //   S + 4-byte len + type1 string
-                //   S + 4-byte len + type2 string
-                //   S + 4-byte len + flags string
-                //   D + 8-byte double value
-                int pos = idx + needle.Length;
-                for (int s = 0; s < 3; s++)
-                {
-                    if (pos >= data.Length || data[pos] != (byte)'S')
-                        return 1f;
-                    pos++; // skip 'S'
-                    if (pos + 4 > data.Length) return 1f;
-                    int len = BitConverter.ToInt32(data, pos);
-                    pos += 4 + len;
-                }
-
-                if (pos >= data.Length || data[pos] != (byte)'D')
-                    return 1f;
-                pos++; // skip 'D'
-
-                if (pos + 8 > data.Length) return 1f;
-                double value = BitConverter.ToDouble(data, pos);
-                return (float)value;
+                Debug.Log($"[U2G][INFO] Patched UnitScaleFactor: {currentUsf} -> {targetUsf} in {Path.GetFileName(destFbxPath)}");
             }
             catch (Exception e)
             {
-                Debug.LogWarning($"[U2G][WARN] Failed to parse UnitScaleFactor from '{fbxPath}': {e.Message}");
-                return 1f;
+                Debug.LogWarning($"[U2G][WARN] Failed to patch UnitScaleFactor in '{destFbxPath}': {e.Message}");
             }
+        }
+
+        /// <summary>
+        /// Finds the byte offset of the UnitScaleFactor double value in FBX binary data.
+        /// Skips over OriginalUnitScaleFactor. Returns -1 if not found.
+        /// </summary>
+        static int FindUnitScaleFactorOffset(byte[] data)
+        {
+            byte[] needle = Encoding.ASCII.GetBytes("UnitScaleFactor");
+
+            int idx = FindByteSequence(data, needle, 0);
+            if (idx < 0) return -1;
+
+            // Verify this is not "OriginalUnitScaleFactor" by checking the preceding byte.
+            // In FBX binary, the property name is preceded by a 1-byte 'S' type marker
+            // and a 4-byte length. If the character before our match is part of "Original",
+            // skip to the next occurrence.
+            if (idx > 0 && data[idx - 1] != needle.Length)
+            {
+                byte[] original = Encoding.ASCII.GetBytes("Original");
+                if (idx >= original.Length)
+                {
+                    bool isOriginal = true;
+                    for (int i = 0; i < original.Length; i++)
+                    {
+                        if (data[idx - original.Length + i] != original[i])
+                        {
+                            isOriginal = false;
+                            break;
+                        }
+                    }
+                    if (isOriginal)
+                        idx = FindByteSequence(data, needle, idx + needle.Length);
+                }
+            }
+
+            if (idx < 0) return -1;
+
+            // Navigate past the property name to the value.
+            // FBX P-node property format after name:
+            //   S + 4-byte len + type1 string
+            //   S + 4-byte len + type2 string
+            //   S + 4-byte len + flags string
+            //   D + 8-byte double value
+            int pos = idx + needle.Length;
+            for (int s = 0; s < 3; s++)
+            {
+                if (pos >= data.Length || data[pos] != (byte)'S')
+                    return -1;
+                pos++; // skip 'S'
+                if (pos + 4 > data.Length) return -1;
+                int len = BitConverter.ToInt32(data, pos);
+                pos += 4 + len;
+            }
+
+            if (pos >= data.Length || data[pos] != (byte)'D')
+                return -1;
+            pos++; // skip 'D'
+
+            if (pos + 8 > data.Length) return -1;
+            return pos;
         }
 
         static int FindByteSequence(byte[] haystack, byte[] needle, int startIndex)

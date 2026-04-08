@@ -7,7 +7,8 @@
       "Bash(find \"C:\\\\dev\\\\u2g-exporter\\\\Assets\\\\Editor\" -name \"*.cs\" -exec grep -l \"ModelImporter\\\\|AssetImporter\\\\|root_scale\" {} \\\\;)",
       "Bash(find \"C:\\\\dev\\\\u2g-exporter\\\\Assets\\\\Editor\" -name \"*.cs\" -type f -exec grep -l \"root_scale\" {} \\\\;)",
       "Bash(find C:/dev/u2g-exporter/Assets/Editor -name \"*.cs\" -type f -exec grep -l \"root_scale\" {} \\\\;)",
-      "Bash(git checkout:*)"
+      "Bash(git checkout:*)",
+      "Bash(grep -n \"ComputeGodotScaleCompensation\" /c/dev/u2g-exporter/Assets/Editor/U2GExporter/*.cs)"
     ]
   }
 }
