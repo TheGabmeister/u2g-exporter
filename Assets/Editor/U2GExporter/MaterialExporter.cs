@@ -39,6 +39,12 @@ namespace U2GExporter
                 case "Mobile/Unlit (Supports Lightmap)":
                     WriteLegacyBuiltin(material, writer, transparent: false);
                     break;
+                case "Unlit/Texture":
+                case "Unlit/Color":
+                case "Unlit/Transparent":
+                case "Unlit/Transparent Cutout":
+                    WriteLegacyUnlit(material, writer);
+                    break;
                 case "Legacy Shaders/Transparent/Diffuse":
                 case "Legacy Shaders/Transparent/Specular":
                 case "Legacy Shaders/Transparent/Bumped Diffuse":
@@ -226,6 +232,40 @@ namespace U2GExporter
 
             // Occlusion
             WriteOcclusion(mat, w, "_OcclusionMap", null);
+
+            // UV tiling/offset
+            WriteUVTilingOffset(mat, w, "_MainTex");
+        }
+
+        static void WriteLegacyUnlit(Material mat, TresWriter w)
+        {
+            // Unshaded mode
+            w.AddPropertyInt("shading_mode", 0); // SHADING_MODE_UNSHADED
+
+            // Albedo
+            Color color = mat.HasProperty("_Color") ? mat.GetColor("_Color") : Color.white;
+            w.AddPropertyColor("albedo_color", color.r, color.g, color.b, color.a);
+
+            WriteTextureProperty(mat, w, "_MainTex", "albedo_texture", "Texture2D");
+
+            // Transparency (Unlit/Transparent, Unlit/Transparent Cutout)
+            if (mat.HasProperty("_Cutoff"))
+            {
+                float cutoff = mat.GetFloat("_Cutoff");
+                if (cutoff > 0f)
+                {
+                    w.AddPropertyInt("transparency", 2); // TRANSPARENCY_ALPHA_SCISSOR
+                    w.AddPropertyFloat("alpha_scissor_threshold", cutoff);
+                }
+                else
+                {
+                    w.AddPropertyInt("transparency", 1); // TRANSPARENCY_ALPHA
+                }
+            }
+            else if (mat.shader.name.Contains("Transparent"))
+            {
+                w.AddPropertyInt("transparency", 1); // TRANSPARENCY_ALPHA
+            }
 
             // UV tiling/offset
             WriteUVTilingOffset(mat, w, "_MainTex");

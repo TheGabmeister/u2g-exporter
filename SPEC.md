@@ -218,7 +218,7 @@ Assets/Characters/Materials/Glass.mat   →  Characters/Materials/Glass.tres
 
 ### Shader Scope
 
-Four shader families are supported:
+Five shader families are supported:
 
 | Unity Shader | Godot Material | Notes |
 |---|---|---|
@@ -226,9 +226,14 @@ Four shader families are supported:
 | `Universal Render Pipeline/Unlit` | `StandardMaterial3D` (unshaded) | `shading_mode = SHADING_MODE_UNSHADED` |
 | `Standard` (Built-in) | `StandardMaterial3D` | Legacy Built-in pipeline, full PBR |
 | Legacy Built-in shaders | `StandardMaterial3D` | Diffuse/Specular/Bumped/Transparent families + Mobile variants |
+| Legacy Unlit shaders | `StandardMaterial3D` (unshaded) | `Unlit/*` family — color, texture, transparency |
 
-The following legacy built-in shader names are recognized:
+The following legacy built-in and unlit shader names are recognized:
 
+- `Unlit/Texture`
+- `Unlit/Color`
+- `Unlit/Transparent`
+- `Unlit/Transparent Cutout`
 - `Legacy Shaders/Diffuse`
 - `Legacy Shaders/Specular`
 - `Legacy Shaders/Bumped Diffuse`
@@ -319,6 +324,18 @@ Additional V1 rules for legacy built-in shaders:
 - `Mobile/Unlit (Supports Lightmap)` is mapped identically to `Mobile/Diffuse` — it uses the same `_MainTex`/`_Color` properties. The lightmap-specific features are not converted.
 - `_SpecColor` is present on Specular variants but is not mapped — Godot's `StandardMaterial3D` has no direct specular color equivalent.
 - Properties are read via `HasProperty` checks, so a single code path handles all legacy built-in variants.
+
+### Property Mapping: Legacy Unlit Shaders → StandardMaterial3D
+
+All `Unlit/*` shaders set `shading_mode = SHADING_MODE_UNSHADED` (= 0).
+
+| Unity Property | Godot Property | Conversion | Present on |
+|---|---|---|---|
+| `_Color` | `albedo_color` | Direct RGBA | All |
+| `_MainTex` | `albedo_texture` | Texture reference | All |
+| `_Cutoff` | `transparency` + `alpha_scissor_threshold` | `TRANSPARENCY_ALPHA_SCISSOR` if cutoff > 0, else `TRANSPARENCY_ALPHA` | `Unlit/Transparent Cutout` |
+| (Transparent variants) | `transparency` | `TRANSPARENCY_ALPHA` (= 1) | `Unlit/Transparent` |
+| `_MainTex` tiling/offset | `uv1_scale` + `uv1_offset` | `material.GetTextureScale` / `GetTextureOffset` | All |
 
 ### Output Format: .tres
 
