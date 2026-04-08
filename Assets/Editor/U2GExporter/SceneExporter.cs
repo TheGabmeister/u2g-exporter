@@ -80,6 +80,15 @@ namespace U2GExporter
             if (modifications == null)
                 return;
 
+            var prefabSource = PrefabUtility.GetCorrespondingObjectFromSource(instanceRoot);
+            if (prefabSource == null)
+                return;
+
+            // Group material overrides by source Renderer
+            var materialOverrides = new Dictionary<Renderer, List<(int index, Material mat)>>();
+            // Track child transforms that have overrides
+            var childTransformOverrides = new HashSet<Transform>();
+
             foreach (var mod in modifications)
             {
                 if (mod.target == null)
@@ -87,7 +96,6 @@ namespace U2GExporter
 
                 string propPath = mod.propertyPath;
 
-                // We handle transform and material overrides; warn on others
                 bool isTransformOverride = propPath.StartsWith("m_LocalPosition") ||
                                            propPath.StartsWith("m_LocalRotation") ||
                                            propPath.StartsWith("m_LocalScale");
@@ -99,22 +107,96 @@ namespace U2GExporter
                                          propPath.StartsWith("m_TagString") ||
                                          propPath.StartsWith("m_StaticEditorFlags");
 
-                if (!isTransformOverride && !isMaterialOverride && !isCommonIgnorable)
+                if (isTransformOverride)
                 {
-                    // Only warn for non-trivial overrides
-                    if (!propPath.StartsWith("m_") || propPath.Contains("Component"))
-                    {
-                        Debug.LogWarning($"[U2G][WARN] Unsupported prefab override: {propPath} on {mod.target.name}");
-                    }
+                    // Root transform is baked (read via go.transform in ConvertPrefabInstance).
+                    // Child transform overrides need explicit override nodes.
+                    var targetTransform = mod.target as Transform;
+                    if (targetTransform != null && targetTransform != prefabSource.transform)
+                        childTransformOverrides.Add(targetTransform);
+                    continue;
                 }
 
-                // Note: Transform and material overrides are already baked into the
-                // prefab instance's transform (read via go.transform) and material arrays
-                // (read via MeshRenderer.sharedMaterials). The instance=ExtResource approach
-                // in ConvertPrefabInstance already writes the instance's world-local transform.
-                // For V1, we rely on the transform being read directly from the instance
-                // and don't need to re-apply modifications separately.
+                if (isMaterialOverride)
+                {
+                    var renderer = mod.target as Renderer;
+                    if (renderer == null) continue;
+
+                    int startIdx = propPath.IndexOf('[') + 1;
+                    int endIdx = propPath.IndexOf(']');
+                    if (startIdx <= 0 || endIdx < 0) continue;
+                    if (!int.TryParse(propPath.Substring(startIdx, endIdx - startIdx), out int matIndex))
+                        continue;
+
+                    Material mat = mod.objectReference as Material;
+                    if (mat == null) continue;
+
+                    if (!materialOverrides.TryGetValue(renderer, out var list))
+                    {
+                        list = new List<(int, Material)>();
+                        materialOverrides[renderer] = list;
+                    }
+                    list.Add((matIndex, mat));
+                    continue;
+                }
+
+                if (!isCommonIgnorable && (!propPath.StartsWith("m_") || propPath.Contains("Component")))
+                {
+                    Debug.LogWarning($"[U2G][WARN] Unsupported prefab override: {propPath} on {mod.target.name}");
+                }
             }
+
+            // Apply child transform overrides
+            foreach (var sourceTransform in childTransformOverrides)
+            {
+                string relativePath = GetRelativePath(prefabSource.transform, sourceTransform);
+                if (relativePath == null)
+                {
+                    Debug.LogWarning($"[U2G][WARN] Could not resolve path for transform override on '{sourceTransform.name}'.");
+                    continue;
+                }
+
+                Transform instanceChild = FindInstanceChild(instanceRoot.transform, relativePath);
+                if (instanceChild == null)
+                {
+                    Debug.LogWarning($"[U2G][WARN] Could not find instance child at '{relativePath}' — skipping transform override.");
+                    continue;
+                }
+
+                converter.WritePrefabInstanceTransformOverride(instanceRoot, relativePath, instanceChild);
+            }
+
+            // Apply material overrides
+            foreach (var kvp in materialOverrides)
+            {
+                converter.WritePrefabInstanceMaterialOverride(instanceRoot, prefabSource, kvp.Key, kvp.Value);
+            }
+        }
+
+        static string GetRelativePath(Transform root, Transform target)
+        {
+            var parts = new List<string>();
+            Transform current = target;
+            while (current != null && current != root)
+            {
+                parts.Add(current.name);
+                current = current.parent;
+            }
+            if (current != root) return null;
+            parts.Reverse();
+            return string.Join("/", parts);
+        }
+
+        static Transform FindInstanceChild(Transform instanceRoot, string relativePath)
+        {
+            string[] parts = relativePath.Split('/');
+            Transform current = instanceRoot;
+            foreach (string name in parts)
+            {
+                current = current.Find(name);
+                if (current == null) return null;
+            }
+            return current;
         }
     }
 }

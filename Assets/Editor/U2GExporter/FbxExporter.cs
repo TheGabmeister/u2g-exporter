@@ -49,7 +49,6 @@ namespace U2GExporter
             for (int i = 0; i < go.transform.childCount; i++)
             {
                 Transform child = go.transform.GetChild(i);
-                // Map by child index and name for lookup
                 map[child.name] = child.name;
                 CollectNodeNamesRecursive(child, child.name, map);
             }

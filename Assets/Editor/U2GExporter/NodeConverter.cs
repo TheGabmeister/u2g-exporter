@@ -183,6 +183,120 @@ namespace U2GExporter
             _writer.AddBlankLine();
         }
 
+        public void AddBlankLine()
+        {
+            _writer.AddBlankLine();
+        }
+
+        /// <summary>
+        /// Writes a transform override node for a child within a prefab instance.
+        /// </summary>
+        public void WritePrefabInstanceTransformOverride(GameObject instanceRoot, string childRelativePath, Transform instanceChild)
+        {
+            if (!_objectToNodePath.TryGetValue(instanceRoot.GetInstanceID(), out string instancePath))
+            {
+                Debug.LogWarning($"[U2G][WARN] Cannot resolve instance path for '{instanceRoot.name}' — skipping transform override.");
+                return;
+            }
+
+            SplitLastSegment(childRelativePath, out string parentSuffix, out string nodeName);
+            string overrideParent = string.IsNullOrEmpty(parentSuffix) ? instancePath : instancePath + "/" + parentSuffix;
+
+            _writer.AddOverrideNode(nodeName, overrideParent);
+            float[] t = CoordConvert.ConvertTransform(instanceChild);
+            _writer.AddPropertyTransform(t);
+            _writer.AddBlankLine();
+        }
+
+        /// <summary>
+        /// Writes material override nodes for a child within a prefab instance.
+        /// For FBX-backed meshes, targets the FBX child node. Non-FBX meshes are warned and skipped.
+        /// </summary>
+        public void WritePrefabInstanceMaterialOverride(GameObject instanceRoot, GameObject prefabSourceRoot,
+            Renderer sourceRenderer, List<(int index, Material mat)> overrides)
+        {
+            if (!_objectToNodePath.TryGetValue(instanceRoot.GetInstanceID(), out string instancePath))
+            {
+                Debug.LogWarning($"[U2G][WARN] Cannot resolve instance path for '{instanceRoot.name}' — skipping material override.");
+                return;
+            }
+
+            string childRelativePath = GetRelativePath(prefabSourceRoot.transform, sourceRenderer.transform);
+            if (childRelativePath == null)
+            {
+                Debug.LogWarning($"[U2G][WARN] Could not resolve path for material override on '{sourceRenderer.name}'.");
+                return;
+            }
+
+            // Check if the mesh is FBX-backed
+            var meshFilter = sourceRenderer.GetComponent<MeshFilter>();
+            string fbxPath = null;
+            if (meshFilter != null && meshFilter.sharedMesh != null)
+            {
+                string meshAssetPath = AssetDatabase.GetAssetPath(meshFilter.sharedMesh);
+                if (!string.IsNullOrEmpty(meshAssetPath) && meshAssetPath.EndsWith(".fbx", System.StringComparison.OrdinalIgnoreCase))
+                    fbxPath = meshAssetPath;
+            }
+
+            if (fbxPath == null)
+            {
+                Debug.LogWarning($"[U2G][WARN] Material override on non-FBX mesh '{sourceRenderer.name}' in prefab instance — cannot apply.");
+                return;
+            }
+
+            var nodeNames = FbxExporter.GetNodeNames(fbxPath);
+            if (nodeNames.Count == 0)
+            {
+                Debug.LogWarning($"[U2G][WARN] No FBX child nodes in '{fbxPath}' — skipping material override.");
+                return;
+            }
+
+            string targetNodeName = nodeNames[0];
+            string overrideParent = string.IsNullOrEmpty(childRelativePath) ? instancePath : instancePath + "/" + childRelativePath;
+
+            _writer.AddOverrideNode(targetNodeName, overrideParent);
+
+            foreach (var (index, mat) in overrides)
+            {
+                string matPath = AssetDatabase.GetAssetPath(mat);
+                if (string.IsNullOrEmpty(matPath)) continue;
+                string matResPath = PathUtil.MaterialToGodotResPath(matPath);
+                string matExtId = _writer.AddExtResource("Material", matResPath);
+                _writer.AddPropertyExtResource($"surface_material_override/{index}", matExtId);
+            }
+
+            _writer.AddBlankLine();
+        }
+
+        static string GetRelativePath(Transform root, Transform target)
+        {
+            var parts = new List<string>();
+            Transform current = target;
+            while (current != null && current != root)
+            {
+                parts.Add(current.name);
+                current = current.parent;
+            }
+            if (current != root) return null;
+            parts.Reverse();
+            return string.Join("/", parts);
+        }
+
+        static void SplitLastSegment(string path, out string parentPart, out string namePart)
+        {
+            int lastSlash = path.LastIndexOf('/');
+            if (lastSlash >= 0)
+            {
+                namePart = path.Substring(lastSlash + 1);
+                parentPart = path.Substring(0, lastSlash);
+            }
+            else
+            {
+                namePart = path;
+                parentPart = null;
+            }
+        }
+
         void WriteFbxMaterialOverrides(string fbxPath, MeshRenderer renderer, string nodeName, string parentPath)
         {
             if (renderer.sharedMaterials == null || renderer.sharedMaterials.Length == 0)

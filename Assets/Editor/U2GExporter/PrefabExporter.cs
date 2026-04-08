@@ -50,21 +50,42 @@ namespace U2GExporter
                 var source = PrefabUtility.GetCorrespondingObjectFromSource(childGo);
                 bool isNestedPrefab = source != null && PrefabUtility.IsAnyPrefabInstanceRoot(childGo);
 
-                if (isNestedPrefab && nestingDepth == 0)
+                if (isNestedPrefab)
                 {
-                    // One level deep: flatten the nested prefab's hierarchy
-                    converter.ConvertHierarchy(childGo, parentPath, siblingNames);
-                }
-                else if (isNestedPrefab && nestingDepth > 0)
-                {
-                    // Deeper nesting: warn and still flatten
-                    Debug.LogWarning($"[U2G][WARN] Nested prefab depth > 1 detected at '{childGo.name}' " +
-                        $"inside prefab. Flattening, but deep nesting may lose fidelity.");
+                    if (nestingDepth > 0)
+                    {
+                        Debug.LogWarning($"[U2G][WARN] Nested prefab depth > 1 detected at '{childGo.name}' " +
+                            $"inside prefab. Flattening, but deep nesting may lose fidelity.");
+                    }
+
+                    // Scan descendants for even deeper nesting before flattening
+                    WarnDeeperNesting(childGo, nestingDepth + 1);
+
+                    // Flatten: ConvertHierarchy emits the full subtree inline
                     converter.ConvertHierarchy(childGo, parentPath, siblingNames);
                 }
                 else
                 {
                     converter.ConvertHierarchy(childGo, parentPath, siblingNames);
+                }
+            }
+        }
+
+        static void WarnDeeperNesting(GameObject go, int depth)
+        {
+            for (int i = 0; i < go.transform.childCount; i++)
+            {
+                var child = go.transform.GetChild(i).gameObject;
+                var source = PrefabUtility.GetCorrespondingObjectFromSource(child);
+                if (source != null && PrefabUtility.IsAnyPrefabInstanceRoot(child))
+                {
+                    Debug.LogWarning($"[U2G][WARN] Nested prefab depth > 1 detected at '{child.name}' " +
+                        $"inside prefab. Flattening, but deep nesting may lose fidelity.");
+                    WarnDeeperNesting(child, depth + 1);
+                }
+                else
+                {
+                    WarnDeeperNesting(child, depth);
                 }
             }
         }

@@ -76,6 +76,11 @@ namespace U2GExporter
             _nodes.Add($"{name} = {value}");
         }
 
+        public void AddPropertyInt(string name, int value)
+        {
+            _nodes.Add(string.Format(CultureInfo.InvariantCulture, "{0} = {1}", name, value));
+        }
+
         public void AddPropertyFloat(string name, float value)
         {
             _nodes.Add(string.Format(CultureInfo.InvariantCulture, "{0} = {1}", name, value));
