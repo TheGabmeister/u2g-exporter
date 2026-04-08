@@ -21,13 +21,23 @@ namespace U2GExporter
 
             var nodeConverter = new NodeConverter(writer, skipReport);
 
-            // Convert the prefab root as the scene root node
-            ConvertPrefabRoot(prefabRoot, sceneName, writer, nodeConverter, skipReport);
+            // Convert the prefab root as the scene root node.
+            // Returns true if root is FBX-backed (children are part of the FBX instance).
+            bool rootIsFbxInstance = ConvertPrefabRoot(prefabRoot, sceneName, writer, skipReport);
             writer.AddBlankLine();
 
-            // Traverse children — flatten nested prefabs one level deep
-            var siblingNames = new HashSet<string>();
-            ConvertPrefabChildren(prefabRoot, ".", siblingNames, nodeConverter, skipReport, 0);
+            if (rootIsFbxInstance)
+            {
+                // Children are part of the FBX instance — don't re-process them.
+                // Instead, scan for material overrides on descendants.
+                WriteFbxDescendantMaterialOverrides(prefabRoot.transform, ".", writer);
+            }
+            else
+            {
+                // Traverse children — flatten nested prefabs one level deep
+                var siblingNames = new HashSet<string>();
+                ConvertPrefabChildren(prefabRoot, ".", siblingNames, nodeConverter, skipReport, 0);
+            }
 
             // Write output
             string relativePath = PathUtil.UnityToGodotRelativePath(assetPath);
@@ -38,89 +48,129 @@ namespace U2GExporter
             Debug.Log($"[U2G][INFO] Converted prefab: {assetPath}");
         }
 
-        static void ConvertPrefabRoot(GameObject root, string sceneName, TscnWriter writer,
-            NodeConverter nodeConverter, SkipReport skipReport)
+        /// <summary>
+        /// Converts the prefab root as the scene root node.
+        /// Returns true if the root is an FBX instance (children are part of the FBX).
+        /// </summary>
+        static bool ConvertPrefabRoot(GameObject root, string sceneName, TscnWriter writer, SkipReport skipReport)
         {
-            var meshFilter = root.GetComponent<MeshFilter>();
-            var meshRenderer = root.GetComponent<MeshRenderer>();
-            bool hasMesh = meshFilter != null && meshRenderer != null && meshFilter.sharedMesh != null;
-            string fbxPath = null;
+            // Check if any node in the hierarchy is FBX-backed.
+            // For FBX prefabs, the mesh is often on a child (e.g., Suzanne) not the root.
+            string fbxPath = FindFbxSource(root);
 
-            if (hasMesh)
+            if (fbxPath != null)
             {
-                string meshAssetPath = AssetDatabase.GetAssetPath(meshFilter.sharedMesh);
-                if (!string.IsNullOrEmpty(meshAssetPath) && meshAssetPath.EndsWith(".fbx", System.StringComparison.OrdinalIgnoreCase))
-                    fbxPath = meshAssetPath;
-            }
-
-            if (hasMesh && fbxPath != null)
-            {
-                // FBX-backed root: instance the FBX as the scene root
+                // FBX-backed prefab: instance the FBX as the scene root
                 string resPath = PathUtil.FbxToGodotResPath(fbxPath);
                 string extId = writer.AddExtResource("PackedScene", resPath);
                 writer.AddRootInstanceNode(sceneName, extId);
+                return true;
+            }
 
-                // Material overrides on the FBX child nodes
-                if (meshRenderer.sharedMaterials != null && meshRenderer.sharedMaterials.Length > 0)
-                {
-                    var nodeNames = FbxExporter.GetNodeNames(fbxPath);
-                    if (nodeNames.Count > 0)
-                    {
-                        string targetNodeName = nodeNames[0];
-                        bool hasOverrides = false;
+            // Non-FBX root
+            var light = root.GetComponent<Light>();
+            var camera = root.GetComponent<Camera>();
 
-                        for (int i = 0; i < meshRenderer.sharedMaterials.Length; i++)
-                        {
-                            Material mat = meshRenderer.sharedMaterials[i];
-                            if (mat == null) continue;
-                            string matPath = AssetDatabase.GetAssetPath(mat);
-                            if (string.IsNullOrEmpty(matPath)) continue;
-
-                            if (!hasOverrides)
-                            {
-                                writer.AddOverrideNode(targetNodeName, ".");
-                                hasOverrides = true;
-                            }
-
-                            string matResPath = PathUtil.MaterialToGodotResPath(matPath);
-                            string matExtId = writer.AddExtResource("Material", matResPath);
-                            writer.AddPropertyExtResource($"surface_material_override/{i}", matExtId);
-                        }
-
-                        if (hasOverrides)
-                            writer.AddBlankLine();
-                    }
-                }
+            if (light != null)
+            {
+                var lightData = LightExporter.Extract(light);
+                writer.AddRootNode(sceneName, lightData.IsValid ? lightData.GodotType : "Node3D");
+                if (lightData.IsValid)
+                    LightExporter.WriteProperties(writer, lightData);
+            }
+            else if (camera != null)
+            {
+                writer.AddRootNode(sceneName, "Camera3D");
+                CameraExporter.WriteProperties(writer, camera);
             }
             else
             {
-                // Non-FBX or no mesh: plain Node3D root
-                var light = root.GetComponent<Light>();
-                var camera = root.GetComponent<Camera>();
+                writer.AddRootNode(sceneName, "Node3D");
+            }
 
-                if (light != null)
+            var meshFilter = root.GetComponent<MeshFilter>();
+            if (meshFilter != null && meshFilter.sharedMesh != null)
+            {
+                string meshInfo = meshFilter.sharedMesh.name;
+                Debug.LogWarning($"[U2G][WARN] Prefab root '{root.name}' has non-FBX mesh: {meshInfo}. Created Node3D.");
+                skipReport.Add("Unsupported Mesh Sources", $"{root.name}: {meshInfo}");
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Finds the FBX source for this prefab by checking the root and its descendants.
+        /// </summary>
+        static string FindFbxSource(GameObject root)
+        {
+            // Check root first
+            string fbxPath = GetFbxPathFromMesh(root);
+            if (fbxPath != null) return fbxPath;
+
+            // Check children (FBX prefabs often have mesh on a child node)
+            for (int i = 0; i < root.transform.childCount; i++)
+            {
+                fbxPath = GetFbxPathFromMesh(root.transform.GetChild(i).gameObject);
+                if (fbxPath != null) return fbxPath;
+            }
+
+            return null;
+        }
+
+        static string GetFbxPathFromMesh(GameObject go)
+        {
+            var meshFilter = go.GetComponent<MeshFilter>();
+            if (meshFilter == null || meshFilter.sharedMesh == null) return null;
+
+            string meshAssetPath = AssetDatabase.GetAssetPath(meshFilter.sharedMesh);
+            if (!string.IsNullOrEmpty(meshAssetPath) && meshAssetPath.EndsWith(".fbx", System.StringComparison.OrdinalIgnoreCase))
+                return meshAssetPath;
+
+            return null;
+        }
+
+        /// <summary>
+        /// Walks descendants of an FBX instance root and writes material override nodes
+        /// for any MeshRenderer that has materials assigned.
+        /// </summary>
+        static void WriteFbxDescendantMaterialOverrides(Transform parent, string parentPath, TscnWriter writer)
+        {
+            for (int i = 0; i < parent.childCount; i++)
+            {
+                Transform child = parent.GetChild(i);
+                string childPath = parentPath == "." ? child.name : parentPath + "/" + child.name;
+
+                var renderer = child.GetComponent<MeshRenderer>();
+                if (renderer != null && renderer.sharedMaterials != null)
                 {
-                    var lightData = LightExporter.Extract(light);
-                    writer.AddRootNode(sceneName, lightData.IsValid ? lightData.GodotType : "Node3D");
-                    if (lightData.IsValid)
-                        LightExporter.WriteProperties(writer, lightData);
-                }
-                else if (camera != null)
-                {
-                    writer.AddRootNode(sceneName, "Camera3D");
-                    CameraExporter.WriteProperties(writer, camera);
-                }
-                else
-                {
-                    writer.AddRootNode(sceneName, "Node3D");
+                    bool hasOverrides = false;
+                    for (int m = 0; m < renderer.sharedMaterials.Length; m++)
+                    {
+                        Material mat = renderer.sharedMaterials[m];
+                        if (mat == null) continue;
+
+                        string matPath = AssetDatabase.GetAssetPath(mat);
+                        if (string.IsNullOrEmpty(matPath) || matPath.EndsWith(".fbx", System.StringComparison.OrdinalIgnoreCase))
+                            continue; // Skip FBX-embedded default materials
+
+                        if (!hasOverrides)
+                        {
+                            writer.AddOverrideNode(child.name, parentPath);
+                            hasOverrides = true;
+                        }
+
+                        string matResPath = PathUtil.MaterialToGodotResPath(matPath);
+                        string matExtId = writer.AddExtResource("Material", matResPath);
+                        writer.AddPropertyExtResource($"surface_material_override/{m}", matExtId);
+                    }
+
+                    if (hasOverrides)
+                        writer.AddBlankLine();
                 }
 
-                if (hasMesh && fbxPath == null)
-                {
-                    string meshInfo = meshFilter.sharedMesh.name;
-                    Debug.LogWarning($"[U2G][WARN] Prefab root '{root.name}' has non-FBX mesh: {meshInfo}. Created Node3D.");
-                    skipReport.Add("Unsupported Mesh Sources", $"{root.name}: {meshInfo}");
-                }
+                // Recurse into deeper children
+                WriteFbxDescendantMaterialOverrides(child, childPath, writer);
             }
         }
 
