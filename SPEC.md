@@ -21,7 +21,7 @@ A Unity Editor tool that exports selected assets from a Unity project into a rea
 
 | API | Purpose |
 |---|---|
-| `AssetDatabase` | Asset discovery, GUID resolution, dependency tracking, asset loading |
+| `AssetDatabase` | Asset discovery, GUID resolution, asset loading |
 | `Material` | Read shader properties (colors, textures, floats) directly |
 | `GameObject` / `Transform` | Scene and prefab hierarchy traversal, component access |
 | `PrefabUtility` | Prefab loading, override inspection, nested prefab detection |
@@ -39,7 +39,7 @@ A Unity Editor tool that exports selected assets from a Unity project into a rea
 User right-clicks folder → "Export to Godot"
     │
     ▼
-[1. Resolve dependencies: find all assets in folder + all referenced assets]
+[1. Discover all assets inside the selected folder]
     │
     ▼
 [2. Classify assets by type: scene, prefab, material, texture, FBX, other]
@@ -94,24 +94,20 @@ Register via `[MenuItem("Assets/Export to Godot")]` with a validation method tha
 
 ---
 
-## 2. Dependency Resolution
+## 2. Asset Discovery
 
-Since the tool runs inside Unity, assets may reference textures, materials, and models outside the selected folder. All dependencies are resolved automatically.
+Only assets physically inside the selected folder are exported. External dependencies (textures, materials, models referenced by scenes/prefabs but located outside the folder) are **not** pulled in. This avoids exporting Unity-specific assets that Godot cannot use (built-in shaders, default resources, package assets, etc.). The tradeoff is that `ExtResource` references to assets outside the folder will be unresolved in Godot — the user must place those assets manually or ensure all needed assets are inside the selected folder.
 
 ### Process
 
-**Phase 1 — Discover root assets:** Use `AssetDatabase.FindAssets("", new[] { selectedFolderPath })` to enumerate all assets under the selected folder recursively.
+**Phase 1 — Discover assets:** Use `AssetDatabase.FindAssets("", new[] { selectedFolderPath })` to enumerate all assets under the selected folder recursively.
 
-**Phase 2 — Collect dependencies:** For each discovered asset, call `AssetDatabase.GetDependencies(assetPath, recursive: true)`. This returns every material, texture, FBX, and prefab that the asset references, transitively.
-
-**Phase 3 — Deduplicate:** Merge all discovered and dependency asset paths into a `HashSet<string>`.
-
-**Phase 4 — Filter:** Remove assets that should not be exported:
+**Phase 2 — Filter:** Remove assets that should not be exported:
 - Paths starting with `Packages/` (Unity built-in packages)
 - Script files (`.cs`)
 - Editor-only assets, defined in V1 as any asset whose path contains an `Editor/` path segment (for example `Assets/Tools/Editor/Icon.png`)
 
-**Phase 5 — Classify:** For each remaining path, determine asset type via file extension:
+**Phase 3 — Classify:** For each remaining path, determine asset type via file extension:
 - `.unity` → scene
 - `.prefab` → prefab
 - `.mat` → material
@@ -121,9 +117,7 @@ Since the tool runs inside Unity, assets may reference textures, materials, and 
 
 ### Edge Cases
 
-- **Assets outside the selected folder:** A material at `Assets/SharedMaterials/Glass.mat` referenced by a scene inside the selected folder WILL be included automatically.
-- **Circular references:** `AssetDatabase.GetDependencies()` handles circular references internally.
-- **Scene classification:** Only `.unity` files inside the selected folder are converted to `.tscn` scene files. Scenes discovered as external dependencies are NOT converted as standalone scenes — they are only relevant for reference resolution.
+- **Assets outside the selected folder:** NOT included. If a scene references `Assets/SharedMaterials/Glass.mat` but that path is outside the selected folder, the material is not exported. The `.tscn` file will contain an `ExtResource` reference to `res://SharedMaterials/Glass.tres` which will be unresolved until the user exports or places that material manually.
 - **Prefab-only folders:** If the selected folder contains no `.unity` scene files (only prefabs, textures, models, etc.), the output is still valid — `project.godot` is generated normally, but no scene `.tscn` files are produced.
 - **Multi-scene setups:** Unity additive/multi-scene setups are converted as independent scenes. Each `.unity` file becomes its own `.tscn` with no cross-scene references.
 

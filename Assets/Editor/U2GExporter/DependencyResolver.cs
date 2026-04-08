@@ -50,20 +50,9 @@ namespace U2GExporter
                     allPaths.Add(path);
             }
 
-            // Phase 2: Collect dependencies
-            var withDeps = new HashSet<string>(allPaths);
-            foreach (string path in allPaths)
-            {
-                string[] deps = AssetDatabase.GetDependencies(path, true);
-                foreach (string dep in deps)
-                    withDeps.Add(dep);
-            }
-
-            // Phase 3 already done (HashSet)
-
-            // Phase 4: Filter
+            // Phase 2: Filter (only assets within the selected folder)
             var filtered = new HashSet<string>();
-            foreach (string path in withDeps)
+            foreach (string path in allPaths)
             {
                 if (path.StartsWith("Packages/"))
                     continue;
