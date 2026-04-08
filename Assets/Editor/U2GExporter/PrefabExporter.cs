@@ -19,14 +19,14 @@ namespace U2GExporter
             var writer = new TscnWriter();
             string sceneName = Path.GetFileNameWithoutExtension(assetPath);
 
-            // Root node
-            writer.AddRootNode(sceneName, "Node3D");
+            var nodeConverter = new NodeConverter(writer, skipReport);
+
+            // Convert the prefab root as the scene root node
+            ConvertPrefabRoot(prefabRoot, sceneName, writer, nodeConverter, skipReport);
             writer.AddBlankLine();
 
-            var nodeConverter = new NodeConverter(writer, skipReport);
+            // Traverse children — flatten nested prefabs one level deep
             var siblingNames = new HashSet<string>();
-
-            // Traverse prefab hierarchy — flatten nested prefabs one level deep
             ConvertPrefabChildren(prefabRoot, ".", siblingNames, nodeConverter, skipReport, 0);
 
             // Write output
@@ -36,6 +36,92 @@ namespace U2GExporter
             writer.Write(destPath);
 
             Debug.Log($"[U2G][INFO] Converted prefab: {assetPath}");
+        }
+
+        static void ConvertPrefabRoot(GameObject root, string sceneName, TscnWriter writer,
+            NodeConverter nodeConverter, SkipReport skipReport)
+        {
+            var meshFilter = root.GetComponent<MeshFilter>();
+            var meshRenderer = root.GetComponent<MeshRenderer>();
+            bool hasMesh = meshFilter != null && meshRenderer != null && meshFilter.sharedMesh != null;
+            string fbxPath = null;
+
+            if (hasMesh)
+            {
+                string meshAssetPath = AssetDatabase.GetAssetPath(meshFilter.sharedMesh);
+                if (!string.IsNullOrEmpty(meshAssetPath) && meshAssetPath.EndsWith(".fbx", System.StringComparison.OrdinalIgnoreCase))
+                    fbxPath = meshAssetPath;
+            }
+
+            if (hasMesh && fbxPath != null)
+            {
+                // FBX-backed root: instance the FBX as the scene root
+                string resPath = PathUtil.FbxToGodotResPath(fbxPath);
+                string extId = writer.AddExtResource("PackedScene", resPath);
+                writer.AddRootInstanceNode(sceneName, extId);
+
+                // Material overrides on the FBX child nodes
+                if (meshRenderer.sharedMaterials != null && meshRenderer.sharedMaterials.Length > 0)
+                {
+                    var nodeNames = FbxExporter.GetNodeNames(fbxPath);
+                    if (nodeNames.Count > 0)
+                    {
+                        string targetNodeName = nodeNames[0];
+                        bool hasOverrides = false;
+
+                        for (int i = 0; i < meshRenderer.sharedMaterials.Length; i++)
+                        {
+                            Material mat = meshRenderer.sharedMaterials[i];
+                            if (mat == null) continue;
+                            string matPath = AssetDatabase.GetAssetPath(mat);
+                            if (string.IsNullOrEmpty(matPath)) continue;
+
+                            if (!hasOverrides)
+                            {
+                                writer.AddOverrideNode(targetNodeName, ".");
+                                hasOverrides = true;
+                            }
+
+                            string matResPath = PathUtil.MaterialToGodotResPath(matPath);
+                            string matExtId = writer.AddExtResource("Material", matResPath);
+                            writer.AddPropertyExtResource($"surface_material_override/{i}", matExtId);
+                        }
+
+                        if (hasOverrides)
+                            writer.AddBlankLine();
+                    }
+                }
+            }
+            else
+            {
+                // Non-FBX or no mesh: plain Node3D root
+                var light = root.GetComponent<Light>();
+                var camera = root.GetComponent<Camera>();
+
+                if (light != null)
+                {
+                    var lightData = LightExporter.Extract(light);
+                    writer.AddRootNode(sceneName, lightData.IsValid ? lightData.GodotType : "Node3D");
+                    if (lightData.IsValid)
+                        LightExporter.WriteProperties(writer, lightData);
+                }
+                else if (camera != null)
+                {
+                    writer.AddRootNode(sceneName, "Camera3D");
+                    CameraExporter.WriteProperties(writer, camera);
+                }
+                else
+                {
+                    writer.AddRootNode(sceneName, "Node3D");
+                }
+
+                if (hasMesh && fbxPath == null)
+                {
+                    string meshInfo = meshFilter.sharedMesh.name;
+                    Debug.LogWarning($"[U2G][WARN] Prefab root '{root.name}' has non-FBX mesh: {meshInfo}. Created Node3D.");
+                    skipReport.Add("Unsupported Mesh Sources", $"{root.name}: {meshInfo}");
+                }
+            }
         }
 
         static void ConvertPrefabChildren(GameObject go, string parentPath, HashSet<string> siblingNames,

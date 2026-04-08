@@ -42,6 +42,15 @@ namespace U2GExporter
         }
 
         /// <summary>
+        /// Adds a root node that instances an external resource (no parent).
+        /// </summary>
+        public void AddRootInstanceNode(string name, string extResourceId)
+        {
+            _nodes.Add(string.Format("[node name=\"{0}\" instance=ExtResource(\"{1}\")]",
+                EscapeString(name), extResourceId));
+        }
+
+        /// <summary>
         /// Adds a child node with a type.
         /// </summary>
         public void AddNode(string name, string type, string parentPath)

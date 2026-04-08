@@ -67,5 +67,6 @@
         "*.sln": "*.csproj",
         "*.slnx": "*.csproj"
     },
-    "dotnet.defaultSolution": "u2g-exporter.slnx"
+    "dotnet.defaultSolution": "u2g-exporter.slnx",
+    "godotTools.editorPath.godot4": "d:\\Godot_v4.6.2-stable_win64.exe"
 }

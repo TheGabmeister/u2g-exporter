@@ -134,7 +134,9 @@ namespace U2GExporter
                         {
                             var scene = EditorSceneManager.OpenScene(asset.Path, OpenSceneMode.Additive);
                             SceneExporter.Export(scene, asset.Path, outputDir, skipReport);
-                            EditorSceneManager.CloseScene(scene, true);
+                            // Only close if it's not the last remaining loaded scene
+                            if (UnityEngine.SceneManagement.SceneManager.loadedSceneCount > 1)
+                                EditorSceneManager.CloseScene(scene, true);
                         }
                         catch (System.Exception ex)
                         {
