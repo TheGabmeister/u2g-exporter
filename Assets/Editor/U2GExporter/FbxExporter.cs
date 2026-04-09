@@ -163,16 +163,13 @@ namespace U2GExporter
                 // root Model node 180° around Y to compensate.
                 modified |= PatchRootRotation180Y(data, Path.GetFileName(destFbxPath));
 
-                // --- Patch 3: Baked unit conversion scale ---
-                // When USF != OriginalUSF, the FBX exporter may have baked an
-                // Lcl Scaling of (OrigUSF/USF) on Model nodes to cancel out the
-                // unit conversion. Remove it so Godot doesn't double-apply.
-                if (Math.Abs(originalUsf - origUsf) > 1e-6)
-                {
-                    double expectedScale = origUsf / originalUsf;
-                    modified |= PatchBakedUnitConversionScale(data, expectedScale,
-                        Path.GetFileName(destFbxPath));
-                }
+                // --- Patch 3: Remove non-unit Lcl Scaling ---
+                // Unity bakes each Model node's Lcl Scaling into vertex data on
+                // import, so it never appears as a scene-graph transform.  Godot
+                // (ufbx) preserves Lcl Scaling as a node transform, which causes
+                // the mesh to be visually scaled a second time.  Reset every
+                // non-unit Lcl Scaling to (1,1,1) to match Unity's behaviour.
+                modified |= PatchNonUnitLclScaling(data, Path.GetFileName(destFbxPath));
 
                 if (modified)
                     File.WriteAllBytes(destFbxPath, data);
@@ -184,10 +181,11 @@ namespace U2GExporter
         }
 
         /// <summary>
-        /// Finds Lcl Scaling entries with a uniform value matching the expected
-        /// baked compensation scale and resets them to (1, 1, 1).
+        /// Resets every Lcl Scaling entry that is not (1,1,1) to (1,1,1).
+        /// Unity bakes Lcl Scaling into mesh vertices on import; Godot preserves
+        /// it as a node transform.  Removing it prevents double-scaling.
         /// </summary>
-        static bool PatchBakedUnitConversionScale(byte[] data, double expectedScale, string fileName)
+        static bool PatchNonUnitLclScaling(byte[] data, string fileName)
         {
             byte[] needle = Encoding.ASCII.GetBytes("Lcl Scaling");
             bool patched = false;
@@ -222,16 +220,16 @@ namespace U2GExporter
                     double y = BitConverter.ToDouble(data, pos + 10);
                     double z = BitConverter.ToDouble(data, pos + 19);
 
-                    if (Math.Abs(x - expectedScale) < 1e-6
-                        && Math.Abs(y - expectedScale) < 1e-6
-                        && Math.Abs(z - expectedScale) < 1e-6)
+                    if (Math.Abs(x - 1.0) > 1e-6
+                        || Math.Abs(y - 1.0) > 1e-6
+                        || Math.Abs(z - 1.0) > 1e-6)
                     {
                         byte[] one = BitConverter.GetBytes(1.0);
                         Buffer.BlockCopy(one, 0, data, pos + 1, 8);
                         Buffer.BlockCopy(one, 0, data, pos + 10, 8);
                         Buffer.BlockCopy(one, 0, data, pos + 19, 8);
                         patched = true;
-                        Debug.Log($"[U2G][INFO] Patched baked Lcl Scaling ({expectedScale}) -> 1.0 in {fileName}");
+                        Debug.Log($"[U2G][INFO] Reset Lcl Scaling ({x}, {y}, {z}) -> (1, 1, 1) in {fileName}");
                     }
                 }
 
