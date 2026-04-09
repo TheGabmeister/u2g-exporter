@@ -22,7 +22,7 @@ The authoritative product and implementation spec is [SPEC.md](./SPEC.md). If th
 - This repository is a Unity 6 project used as the development and test host for the exporter.
 - The exporter already exists under `Assets/Editor/U2GExporter/`; extend the current implementation instead of recreating it.
 - Existing root Unity folders such as `Assets/`, `Packages/`, and `ProjectSettings/` are project host content, not disposable scaffolding.
-- Sample content currently lives under `Assets/Test/` and is useful for manual export verification, but avoid changing it unless the task requires it.
+- Local sample content may live under `Assets/Test/` for manual export verification, but do not assume specific test assets or scenes are present unless you confirm them in the workspace first.
 - There is no separate CLI build or test harness in the repo; compilation and end-to-end verification happen inside the Unity Editor.
 
 ## Required Versions
@@ -74,7 +74,7 @@ Prefer fitting work into the existing class layout before adding new files. Do n
 - Export only assets physically inside the selected folder. Referenced assets outside that folder are not pulled in for V1, even if scenes or prefabs reference them.
 - Filter out `Packages/` assets, script files, and editor-only assets whose path contains an `Editor/` segment during discovery.
 - Texture handling is copy-only in V1. PSD and EXR files are copied with warnings; they are not transcoded.
-- FBX files are copied directly, but the exported copy may need binary patching so Godot import scale matches Unity import scale. This includes `UnitScaleFactor` correction and, when applicable, resetting baked compensation `Lcl Scaling` values that only exist to offset differing `UnitScaleFactor` and `OriginalUnitScaleFactor` metadata. Never modify the original Unity source FBX in place.
+- FBX files are copied directly, but the exported copy may need binary patching so Godot import scale matches Unity import scale. This includes `UnitScaleFactor` correction and resetting non-unit `Lcl Scaling` values on FBX Model nodes back to identity so Godot does not apply scale a second time. Never modify the original Unity source FBX in place.
 - Do not revive the rejected `.import`-file workaround for FBX scaling. The spec explicitly says it breaks resource references because Godot-owned remap metadata cannot be reliably pre-generated.
 - The FBX scale patching logic is best-effort and binary-only. ASCII FBX files are copied unmodified if the parser cannot locate patchable values.
 - V1 only supports meshes whose source asset path resolves to `.fbx`. Non-FBX mesh sources, including imported `.obj` and `.blend`, Unity primitive meshes, and generated mesh sub-assets, must become placeholder `Node3D`s with warnings and skip-report entries.

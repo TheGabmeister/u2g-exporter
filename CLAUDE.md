@@ -7,6 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **u2g-exporter** (Unity to Godot Exporter) is a Unity Editor tool that exports selected assets from a Unity project into a ready-to-open Godot 4.6.1 project. The user right-clicks a folder in the Project window, selects "Export to Godot", and gets a complete Godot project. V1 scope covers static meshes (FBX), textures, materials (URP Lit/Simple Lit/Unlit, legacy Standard, legacy built-in shaders, Unlit/* shaders), scenes, and prefabs. See [SPEC.md](SPEC.md) for the complete specification — it is the authoritative source for all conversion logic. If AGENTS.md and the spec disagree, follow SPEC.md.
 
 **Unity version:** Unity 6 (6000.3.12f1), C# 9 / .NET Standard 2.1
+**Rendering stack:** URP (`com.unity.render-pipelines.universal` 17.3.0)
 **Target Godot version:** 4.6.1
 
 ## Development Environment
@@ -15,7 +16,7 @@ This is a Unity Editor extension with no external build tooling. There are no CL
 
 - **To test:** Open the Unity project (repo root), right-click `Assets/Test` in the Project window, select "Export to Godot", and pick an output directory. Verify the output in Godot 4.6.x.
 - **To verify compilation:** Open the project in Unity; the Editor-only assembly compiles automatically. Check the Console window for errors.
-- **Test assets:** `Assets/Test/` contains sample content (monkey.fbx, monkey.prefab, Red.mat, SampleScene.unity) used for manual export validation.
+- **Test assets:** `Assets/Test/` contains sample content used for manual export validation. These are large binary files not tracked in git — populate them locally with FBX models, prefabs, materials, textures, and scenes to test against.
 
 ## Architecture
 
@@ -38,6 +39,8 @@ Right-click folder → "Export to Godot"
 - **Folder-only export** — Only assets physically inside the selected folder are exported. External dependencies are not pulled in, avoiding Unity-specific assets Godot can't use. Unresolved `ExtResource` references are expected if referenced assets live outside the folder.
 - **FBX files are copied then patched** — Godot imports FBX natively. The exported copy is binary-patched to fix scale and handedness differences (see FBX Binary Patching below). The Unity source file is never modified.
 - **Coordinate system conversion** — Unity is left-handed Y-up; Godot is right-handed Y-up. Scene/prefab transforms go through `CoordConvert` (negates Z position, negates X/Y quaternion, builds basis matrix). FBX meshes get a 180° Y rotation patched into the FBX binary instead.
+- **Conversion order matters** — textures → FBX → materials → prefabs → scenes → `project.godot`. Changing this order can break resource references.
+- **Material shader coverage** — URP Lit, URP Simple Lit, URP Unlit, legacy Standard, recognized legacy built-in shader families, and recognized `Unlit/*` shader families. All emit `StandardMaterial3D` (not `ORMMaterial3D`). Unknown shaders fall back to default white `StandardMaterial3D` with a warning.
 - **Best-effort error handling** — Never aborts on a single bad asset. Each asset is processed independently. Unresolvable references produce placeholder nodes + warnings.
 - **Prefab nesting** — One level deep is flattened; deeper nesting is warned.
 
@@ -111,7 +114,7 @@ Unity bakes every Model node's `Lcl Scaling` into vertex data on import — the 
 
 Godot's FBX import always wraps all Model nodes under a `RootNode` (`Node3D`). This has two critical consequences:
 
-1. **Material overrides must be child override nodes.** The instance root in a `.tscn` is always a `Node3D`, never a `MeshInstance3D`. Writing `surface_material_override` on it is silently ignored. All material overrides — including for the "root" mesh — must be written as `[node name="mesh_name" parent="."]` override nodes.
+1. **Material overrides must be child override nodes.** The instance root in a `.tscn` is always a `Node3D`, never a `MeshInstance3D`. Writing `surface_material_override` on it is silently ignored. All material overrides — including for the "root" mesh — must be written as `[node name="mesh_name" parent="."]` override nodes. This applies in all three codepaths: `SceneExporter`, `PrefabExporter`, and `NodeConverter`.
 
 2. **FBX node names come from the FBX asset, not the prefab.** When resolving the Godot node name for a mesh, use `AssetDatabase.LoadAssetAtPath<GameObject>(fbxPath).name`, not `instance.name` (has `"(Clone)"`) or `prefabAsset.name` (is the prefab name, not the FBX Model name).
 
