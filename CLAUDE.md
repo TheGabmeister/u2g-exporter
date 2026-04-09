@@ -36,8 +36,8 @@ Right-click folder → "Export to Godot"
 
 - **Runs inside Unity** — Uses Unity's own APIs to read materials, traverse scene hierarchies, and resolve asset references. No custom YAML parser or external libraries needed.
 - **Folder-only export** — Only assets physically inside the selected folder are exported. External dependencies are not pulled in, avoiding Unity-specific assets Godot can't use. Unresolved `ExtResource` references are expected if referenced assets live outside the folder.
-- **FBX files are copied, not converted** — Godot imports FBX natively. Node names are extracted by loading the FBX as a `GameObject` via `AssetDatabase.LoadAssetAtPath<GameObject>()`.
-- **Coordinate system conversion** — Unity is left-handed Y-up; Godot is right-handed Y-up. The conversion negates Z position, negates X/Y quaternion components, builds a 3x3 basis matrix, and serializes as `Transform3D`. Applied to scene-level transforms only. Full algorithm in SPEC.md Section 6.
+- **FBX files are copied then patched** — Godot imports FBX natively. The exported copy is binary-patched to fix scale and handedness differences (see FBX Binary Patching below). The Unity source file is never modified.
+- **Coordinate system conversion** — Unity is left-handed Y-up; Godot is right-handed Y-up. Scene/prefab transforms go through `CoordConvert` (negates Z position, negates X/Y quaternion, builds basis matrix). FBX meshes get a 180° Y rotation patched into the FBX binary instead.
 - **Best-effort error handling** — Never aborts on a single bad asset. Each asset is processed independently. Unresolvable references produce placeholder nodes + warnings.
 - **Prefab nesting** — One level deep is flattened; deeper nesting is warned.
 
@@ -54,7 +54,7 @@ All code lives in `Assets/Editor/U2GExporter/` with an Editor-only `.asmdef`:
 | `PrefabExporter.cs` | Prefab → .tscn, FBX instancing, material overrides |
 | `MaterialExporter.cs` | Material → .tres (URP Lit/Simple Lit/Unlit, Standard, Legacy Built-in, Unlit/*) |
 | `TextureExporter.cs` | Texture copy logic |
-| `FbxExporter.cs` | FBX copy, node name extraction, FBX binary parsing, UnitScaleFactor patching |
+| `FbxExporter.cs` | FBX copy, binary patching (scale, rotation), node name extraction |
 | `LightExporter.cs` | Light component → Godot light node data |
 | `CameraExporter.cs` | Camera component → Godot camera node data |
 | `CoordConvert.cs` | Coordinate system conversion math |
@@ -84,17 +84,37 @@ Unity won't allow closing the last loaded scene. `ExportMenu` checks `EditorScen
 
 `AssetDatabase.GetAssetPath()` does NOT work on instantiated GameObjects (returns empty). Use the original asset reference for any AssetDatabase queries. However, `sharedMaterials` on an instantiated clone still references the original material assets, so `GetAssetPath(mat)` works on those.
 
-### FBX Import Scale
+**Clone naming:** `Object.Instantiate()` appends `"(Clone)"` to the name. Never use `instance.name` when you need the FBX Model node name — use `AssetDatabase.LoadAssetAtPath<GameObject>(fbxPath).name` instead.
 
-Unity and Godot interpret FBX scale metadata differently. The exporter patches the **exported copy** of the FBX binary (never the Unity source) to fix two issues via `FbxExporter.PatchFbxForGodot`:
+## FBX Binary Patching
 
-1. **UnitScaleFactor mismatch** — Godot always applies `USF × 0.01` to vertices; Unity's behaviour depends on `ModelImporter` settings (`useFileScale`, `globalScale`, `fileScale`). The exporter patches USF so `USF × 0.01` equals Unity's effective scale.
+`FbxExporter.PatchFbxForGodot` applies three binary patches to the exported FBX copy in a single read/write pass. All patches use the same FBX P-node navigation pattern (skip 3 `S+len+string` type descriptors, then read `D+double` values).
 
-2. **Baked unit conversion scale** — Some FBX exporters (notably Blender) bake an `Lcl Scaling` of `OriginalUSF / USF` on Model nodes to compensate for unit conversion. Unity collapses this into vertex data on import, but Godot preserves it, causing double-scaling. The exporter detects this when `USF ≠ OriginalUSF` and the `Lcl Scaling` matches the expected ratio, then resets it to `(1, 1, 1)`.
+### Patch 1: UnitScaleFactor
 
-**Known limitations:** ASCII FBX files are not patched (the binary parser skips them safely). The Lcl Scaling patch could false-positive if a node has a legitimate artistic scale that coincidentally matches `OriginalUSF / USF`, but this is extremely unlikely.
+Godot always applies `USF × 0.01` to vertices; Unity's behaviour depends on `ModelImporter` settings (`useFileScale`, `globalScale`, `fileScale`). The exporter reads these via `AssetImporter.GetAtPath()` and patches USF so `USF × 0.01` equals Unity's effective scale.
 
-**Do NOT attempt the `.import` file approach.** Pre-generating Godot `.import` files with `nodes/root_scale` was tried and breaks `.tscn` resource references — Godot requires a complete `[remap]` section (uid, cached import path) that cannot be reliably pre-generated by an external tool.
+### Patch 2: Handedness Rotation
+
+Unity imports FBX as left-handed; Godot as right-handed. This causes meshes to face the opposite direction. The exporter adds 180° to the Y component of the first `Lcl Rotation` entry (root Model node). Only the first parseable entry is patched — children inherit the rotation.
+
+### Patch 3: Baked Unit Conversion Scale
+
+Some FBX exporters (notably Blender) bake an `Lcl Scaling` of `OriginalUSF / USF` on Model nodes. Unity collapses this into vertex data; Godot preserves it, causing double-scaling. The exporter detects this when `USF ≠ OriginalUSF` and the `Lcl Scaling` matches the expected ratio, then resets it to `(1, 1, 1)`.
+
+### Known Limitations
+
+- **ASCII FBX files** are not patched (binary parser skips them safely, but scale/rotation may be wrong in Godot).
+- **Lcl Scaling false positive** — If a node has a legitimate artistic scale coincidentally matching `OriginalUSF / USF`, it will be incorrectly reset. Extremely unlikely in practice.
+- **Do NOT attempt the `.import` file approach.** Pre-generating Godot `.import` files with `nodes/root_scale` was tried and breaks `.tscn` resource references — Godot requires a complete `[remap]` section (uid, cached import path) that cannot be reliably pre-generated by an external tool.
+
+## Godot FBX Import Behavior
+
+Godot's FBX import always wraps all Model nodes under a `RootNode` (`Node3D`). This has two critical consequences:
+
+1. **Material overrides must be child override nodes.** The instance root in a `.tscn` is always a `Node3D`, never a `MeshInstance3D`. Writing `surface_material_override` on it is silently ignored. All material overrides — including for the "root" mesh — must be written as `[node name="mesh_name" parent="."]` override nodes.
+
+2. **FBX node names come from the FBX asset, not the prefab.** When resolving the Godot node name for a mesh, use `AssetDatabase.LoadAssetAtPath<GameObject>(fbxPath).name`, not `instance.name` (has `"(Clone)"`) or `prefabAsset.name` (is the prefab name, not the FBX Model name).
 
 ## Serialization Rules
 
