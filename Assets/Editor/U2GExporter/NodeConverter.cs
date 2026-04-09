@@ -76,13 +76,10 @@ namespace U2GExporter
                 if (isInactive || (meshRenderer != null && !meshRenderer.enabled))
                     _writer.AddPropertyBool("visible", false);
 
-                // Material overrides: for multi-mesh FBX (root + children from same FBX),
-                // write root materials directly on the instance node. For single-mesh FBX,
-                // write a child override node targeting the mesh child.
-                if (HasChildrenFromSameFbx(go, fbxPath))
-                    WriteFbxRootMaterials(meshRenderer, fbxPath);
-                else
-                    WriteFbxMaterialOverrides(fbxPath, meshRenderer, nodeName, parentPath);
+                // Material overrides: Godot wraps all FBX Model nodes under a
+                // RootNode (Node3D), so every mesh — including what Unity treats as
+                // the "root" — is a child.  Always write a child override node.
+                WriteFbxMaterialOverrides(fbxPath, meshRenderer, nodeName, parentPath);
             }
             else if (hasMesh && fbxPath == null)
             {
@@ -327,41 +324,6 @@ namespace U2GExporter
         }
 
         /// <summary>
-        /// Checks if any direct children of a GameObject reference meshes from the same FBX.
-        /// </summary>
-        static bool HasChildrenFromSameFbx(GameObject go, string fbxPath)
-        {
-            for (int i = 0; i < go.transform.childCount; i++)
-            {
-                if (IsPartOfSameFbx(go.transform.GetChild(i).gameObject, fbxPath))
-                    return true;
-            }
-            return false;
-        }
-
-        /// <summary>
-        /// Writes material override properties directly on the current node (the FBX instance root).
-        /// Used for multi-mesh FBX files where the root FBX node has a mesh and Godot's import
-        /// makes the root a MeshInstance3D.
-        /// </summary>
-        void WriteFbxRootMaterials(MeshRenderer renderer, string fbxPath)
-        {
-            if (renderer.sharedMaterials == null) return;
-            for (int m = 0; m < renderer.sharedMaterials.Length; m++)
-            {
-                Material mat = renderer.sharedMaterials[m];
-                if (mat == null) continue;
-                string matPath = AssetDatabase.GetAssetPath(mat);
-                if (string.IsNullOrEmpty(matPath)) continue;
-                if (matPath.EndsWith(".fbx", System.StringComparison.OrdinalIgnoreCase)) continue;
-
-                string matResPath = PathUtil.MaterialToGodotResPath(matPath);
-                string matExtId = _writer.AddExtResource("Material", matResPath);
-                _writer.AddPropertyExtResource($"surface_material_override/{m}", matExtId);
-            }
-        }
-
-        /// <summary>
         /// Writes material override nodes for a child of an FBX instance, using the child's
         /// name to target the corresponding node inside the FBX. Recurses into grandchildren
         /// that are also part of the same FBX.
@@ -409,16 +371,19 @@ namespace U2GExporter
             if (renderer.sharedMaterials == null || renderer.sharedMaterials.Length == 0)
                 return;
 
-            // Load the FBX to get node names
-            var nodeNames = FbxExporter.GetNodeNames(fbxPath);
-            if (nodeNames.Count == 0)
+            // Resolve the Godot child node name for the root mesh.
+            // Godot wraps all FBX Model nodes under RootNode, so the root mesh
+            // is a child.  For multi-mesh FBX the child name is the FBX root
+            // object name; for single-mesh FBX, Godot names the child after the
+            // mesh, which GetNodeNames resolves via instantiation.
+            var fbxAsset = AssetDatabase.LoadAssetAtPath<GameObject>(fbxPath);
+            if (fbxAsset == null)
                 return;
 
-            // For single-mesh FBX or when we can identify the child node,
-            // write material overrides on the first child node
-            string targetNodeName = nodeNames.Count > 0 ? nodeNames[0] : null;
-            if (targetNodeName == null)
-                return;
+            string targetNodeName = fbxAsset.name;
+            var nodeNames = FbxExporter.GetNodeNames(fbxPath);
+            if (fbxAsset.transform.childCount == 0 && nodeNames.Count > 0)
+                targetNodeName = nodeNames[0];
 
             bool hasOverrides = false;
             for (int i = 0; i < renderer.sharedMaterials.Length; i++)
@@ -428,6 +393,7 @@ namespace U2GExporter
 
                 string matPath = AssetDatabase.GetAssetPath(mat);
                 if (string.IsNullOrEmpty(matPath)) continue;
+                if (matPath.EndsWith(".fbx", System.StringComparison.OrdinalIgnoreCase)) continue;
 
                 if (!hasOverrides)
                 {
