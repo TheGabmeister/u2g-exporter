@@ -66,8 +66,8 @@ namespace U2GExporter
                 string extId = _writer.AddExtResource("PackedScene", resPath);
                 _writer.AddInstanceNode(nodeName, parentPath, extId);
 
-                // Scale compensation is handled at the FBX file level
-                // (patched UnitScaleFactor), so use the original transform.
+                // Handedness rotation is handled at the FBX file level
+                // (patched Lcl Rotation), so use the standard transform.
                 float[] t = CoordConvert.ConvertTransform(go.transform);
                 if (t != null)
                     _writer.AddPropertyTransform(t);

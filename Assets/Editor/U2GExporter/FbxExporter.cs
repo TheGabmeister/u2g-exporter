@@ -157,7 +157,13 @@ namespace U2GExporter
                     Debug.Log($"[U2G][INFO] Patched UnitScaleFactor: {originalUsf} -> {targetUsf} in {Path.GetFileName(destFbxPath)}");
                 }
 
-                // --- Patch 2: Baked unit conversion scale ---
+                // --- Patch 2: Handedness rotation ---
+                // Unity imports FBX as left-handed; Godot imports as right-handed.
+                // This causes meshes to face the opposite direction. Rotate the
+                // root Model node 180° around Y to compensate.
+                modified |= PatchRootRotation180Y(data, Path.GetFileName(destFbxPath));
+
+                // --- Patch 3: Baked unit conversion scale ---
                 // When USF != OriginalUSF, the FBX exporter may have baked an
                 // Lcl Scaling of (OrigUSF/USF) on Model nodes to cancel out the
                 // unit conversion. Remove it so Godot doesn't double-apply.
@@ -233,6 +239,53 @@ namespace U2GExporter
             }
 
             return patched;
+        }
+
+        /// <summary>
+        /// Adds 180° to the Y component of the first Lcl Rotation entry in the FBX
+        /// to compensate for the left-handed (Unity) vs right-handed (Godot) FBX
+        /// import difference. Only patches the first parseable entry (root Model node)
+        /// so child nodes inherit the rotation naturally.
+        /// </summary>
+        static bool PatchRootRotation180Y(byte[] data, string fileName)
+        {
+            byte[] needle = Encoding.ASCII.GetBytes("Lcl Rotation");
+            int idx = 0;
+
+            while (true)
+            {
+                idx = FindByteSequence(data, needle, idx);
+                if (idx < 0) return false;
+
+                int pos = idx + needle.Length;
+
+                // Skip 3 S+len+string type descriptor fields
+                bool ok = true;
+                for (int s = 0; s < 3; s++)
+                {
+                    if (pos >= data.Length || data[pos] != (byte)'S')
+                    { ok = false; break; }
+                    pos++;
+                    if (pos + 4 > data.Length) { ok = false; break; }
+                    int len = BitConverter.ToInt32(data, pos);
+                    pos += 4 + len;
+                }
+
+                // Read 3 consecutive D+double values (x, y, z Euler angles)
+                if (ok && pos + 27 <= data.Length
+                    && data[pos] == (byte)'D'
+                    && data[pos + 9] == (byte)'D'
+                    && data[pos + 18] == (byte)'D')
+                {
+                    double y = BitConverter.ToDouble(data, pos + 10);
+                    double newY = y + 180.0;
+                    Buffer.BlockCopy(BitConverter.GetBytes(newY), 0, data, pos + 10, 8);
+                    Debug.Log($"[U2G][INFO] Patched root Lcl Rotation Y: {y} -> {newY} in {fileName}");
+                    return true;
+                }
+
+                idx += needle.Length;
+            }
         }
 
         /// <summary>
