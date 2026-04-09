@@ -8,7 +8,10 @@
       "Bash(find \"C:\\\\dev\\\\u2g-exporter\\\\Assets\\\\Editor\" -name \"*.cs\" -type f -exec grep -l \"root_scale\" {} \\\\;)",
       "Bash(find C:/dev/u2g-exporter/Assets/Editor -name \"*.cs\" -type f -exec grep -l \"root_scale\" {} \\\\;)",
       "Bash(git checkout:*)",
-      "Bash(grep -n \"ComputeGodotScaleCompensation\" /c/dev/u2g-exporter/Assets/Editor/U2GExporter/*.cs)"
+      "Bash(grep -n \"ComputeGodotScaleCompensation\" /c/dev/u2g-exporter/Assets/Editor/U2GExporter/*.cs)",
+      "Read(//c/dev/u2g-exporter/**)",
+      "Bash(xxd -l 30 \"C:/dev/u2g-exporter/Assets/Test/SimpleTown/Models/road_straight_mesh.fbx\")",
+      "Bash(xxd -l 30 \"C:/dev/u2g-exporter/Assets/Test/SimpleCar/Models/muscle_car.fbx\")"
     ]
   }
 }
